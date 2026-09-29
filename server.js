@@ -18,12 +18,11 @@ const DATA_DIR = process.env.DATA_DIR || __dirname; // aponte para um volume per
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { /* ignora */ }
 const CACHE_FILE = path.join(DATA_DIR, 'cache.json');
 const GUIA_TTL = 30 * 24 * 3600 * 1000; // 30 dias
-const PAGE = 20;
-const MAX_PAGINAS = 4;
-const ORCAMENTO_MS = 8000; // tempo máx. montando um catálogo
-const IMG = 'https://image.tmdb.org/t/p/';
+const BLOQ = 'gpbloq:'; // prefixo de id para títulos bloqueados
+const LOGO = 'https://raw.githubusercontent.com/Athayres/IMDB-Conteudo-Classificado/refs/heads/main/logo_family.jpg';
 
 const NIVEIS = ['Nenhum', 'Leve', 'Moderado', 'Grave'];
+const COR = ['⚪', '🟢', '🟡', '🔴']; // Nenhum, Leve, Moderado, Grave
 const CATEGORIAS = [
   { key: 'sexo', rotulo: 'Sexo e nudez', icone: '🔞', ids: ['NUDITY'], texto: /nudity|sex/i },
   { key: 'violencia', rotulo: 'Violência e sangue', icone: '🩸', ids: ['VIOLENCE'], texto: /violence|gore/i },
@@ -31,7 +30,7 @@ const CATEGORIAS = [
   { key: 'drogas', rotulo: 'Álcool, drogas e fumo', icone: '🍺', ids: ['ALCOHOL'], texto: /alcohol|drugs|smoking/i },
   { key: 'susto', rotulo: 'Cenas intensas e assustadoras', icone: '😱', ids: ['FRIGHTENING'], texto: /frightening|intense/i },
 ];
-const CFG_PADRAO = { max: { sexo: 1, violencia: 2, palavroes: 2, drogas: 2, susto: 2 }, semGuia: 'ocultar' };
+const CFG_PADRAO = { max: { sexo: 1, violencia: 2, palavroes: 2, drogas: 2, susto: 2 }, semVotos: 'bloquear', idade: 14 };
 
 // ───────────────────────── cache em disco ─────────────────────────
 let cache = { guias: {}, ids: {}, br: {} };
@@ -76,7 +75,9 @@ function lerConfig(b64) {
       const v = Number(j.max && j.max[c.key]);
       if (Number.isInteger(v) && v >= 0 && v <= 3) cfg.max[c.key] = v;
     }
-    if (j.semGuia === 'mostrar') cfg.semGuia = 'mostrar';
+    cfg.semVotos = j.semVotos === 'permitir' ? 'permitir' : 'bloquear';
+    const idade = Number(j.idade);
+    if ([0, 10, 12, 14, 16, 18].includes(idade)) cfg.idade = idade;
   } catch { /* usa padrão */ }
   return cfg;
 }
@@ -200,6 +201,8 @@ async function consultarIMDb(imdbId) {
   if (gq.json) {
     const g = guiaDeJson(gq.json);
     if (g) return { guia: g, dbg };
+    // O IMDb respondeu normalmente, mas ninguém votou: resposta definitiva (não é falha)
+    if (gq.json.data && gq.json.data.title && !gq.json.errors) return { guia: null, dbg };
   }
   const p = await baixarPaginaIMDb(imdbId);
   dbg.pagina = {
@@ -218,23 +221,56 @@ async function buscarGuia(imdbId) {
   const c = cache.guias[imdbId];
   if (c && Date.now() - c.t < (c.g ? GUIA_TTL : NULO_TTL)) return c.g;
   const r = await consultarIMDb(imdbId);
-  if (r.falhou) return null;
+  if (r.falhou) return undefined; // falha de rede/bloqueio: não confundir com "sem votos"
   cache.guias[imdbId] = { t: Date.now(), g: r.guia };
   salvar();
   return r.guia;
 }
 
-function passa(guia, cfg) {
-  if (!guia) return cfg.semGuia === 'mostrar';
-  return CATEGORIAS.every((c) => guia[c.key] == null || guia[c.key] <= cfg.max[c.key]);
+function idadeDeBR(br) {
+  if (!br) return null;
+  if (br === 'L') return 0;
+  const n = parseInt(br, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+// guia: objeto (níveis) | null (ninguém votou) | undefined (falha ao consultar o IMDb)
+function avaliar(guia, br, cfg) {
+  const motivos = [];
+  if (guia === undefined) {
+    if (cfg.semVotos === 'bloquear') motivos.push('não foi possível verificar o Guia dos Pais agora');
+  } else if (guia === null) {
+    if (cfg.semVotos === 'bloquear') motivos.push('sem Guia dos Pais no IMDb (ninguém votou)');
+  } else {
+    for (const c of CATEGORIAS) {
+      const n = guia[c.key];
+      if (n == null) {
+        if (cfg.semVotos === 'bloquear' && cfg.max[c.key] < 3) motivos.push(`${c.rotulo}: sem votos`);
+      } else if (n > cfg.max[c.key]) {
+        motivos.push(`${c.rotulo}: ${NIVEIS[n]}`);
+      }
+    }
+  }
+  const idade = idadeDeBR(br);
+  if (TMDB_KEY && idade !== null && cfg.idade < 18 && idade > cfg.idade) {
+    motivos.push(`classificação indicativa ${idade === 0 ? 'Livre' : idade + ' anos'} (seu limite: ${cfg.idade === 0 ? 'Livre' : 'até ' + cfg.idade + ' anos'})`);
+  }
+  return { bloqueado: motivos.length > 0, motivos };
 }
 
 function textoGuia(guia, br) {
-  const linhas = guia
-    ? CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? NIVEIS[guia[c.key]] : 'sem votos'}`)
-    : ['⚠ Não consegui ler o Guia dos Pais do IMDb agora'];
+  let linhas;
+  if (guia === undefined) linhas = ['⚠ Não consegui ler o Guia dos Pais do IMDb agora'];
+  else if (guia === null) linhas = ['⚠ Este título não tem Guia dos Pais no IMDb (sem votos)'];
+  else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]} ${NIVEIS[guia[c.key]]}` : '❔ sem votos'}`);
   if (br) linhas.unshift(`🇧🇷 Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
   return linhas.join('\n');
+}
+
+function blocoGuia(guia, br, cfg) {
+  const av = avaliar(guia, br, cfg);
+  const topo = av.bloqueado ? '⛔ BLOQUEADO pelo Guia dos Pais\n' : '✅ Liberado pelo Guia dos Pais\n';
+  return { av, texto: `👪 GUIA DOS PAIS (IMDb)\n${topo}${textoGuia(guia, br)}` };
 }
 
 // ───────────────────────── TMDB ─────────────────────────
@@ -265,15 +301,6 @@ async function resumoPtBR(imdbId) {
   } catch { return null; }
 }
 
-async function imdbDe(tipo, tmdbId) {
-  const k = `${tipo}:${tmdbId}`;
-  if (cache.ids[k] !== undefined) return cache.ids[k];
-  const d = await tmdb(`/${tipo === 'movie' ? 'movie' : 'tv'}/${tmdbId}/external_ids`);
-  cache.ids[k] = d.imdb_id || null;
-  salvar();
-  return cache.ids[k];
-}
-
 async function classificacaoBR(imdbId) {
   if (!TMDB_KEY) return null;
   if (cache.br[imdbId] !== undefined) return cache.br[imdbId];
@@ -296,77 +323,25 @@ async function classificacaoBR(imdbId) {
   } catch { return null; }
 }
 
-// ───────────────────────── Catálogo ─────────────────────────
-async function catalogo(tipo, cfg, skip, busca) {
-  if (!TMDB_KEY) return [];
-  const t = tipo === 'movie' ? 'movie' : 'tv';
-  const alvo = skip + PAGE;
-  const limite = Date.now() + ORCAMENTO_MS;
-  const aprovados = [];
-  const vistos = new Set();
-
-  for (let pagina = 1; pagina <= MAX_PAGINAS && aprovados.length < alvo && Date.now() < limite; pagina++) {
-    const d = busca
-      ? await tmdb(`/search/${t}`, { query: busca, page: pagina })
-      : await tmdb(`/${t}/popular`, { page: pagina });
-    if (!d.results || !d.results.length) break;
-
-    const lote = await Promise.all(d.results.map(async (it) => {
-      try {
-        const imdb = await imdbDe(tipo, it.id);
-        if (!imdb || vistos.has(imdb)) return null;
-        const jaTem = cache.guias[imdb] && Date.now() - cache.guias[imdb].t < GUIA_TTL;
-        if (!jaTem && Date.now() > limite) return null; // sem tempo: fica pro próximo carregamento
-        const guia = await naFilaIMDb(() => buscarGuia(imdb));
-        if (!passa(guia, cfg)) return null;
-        const ano = (it.release_date || it.first_air_date || '').slice(0, 4);
-        return {
-          id: imdb,
-          type: tipo,
-          name: it.title || it.name,
-          poster: it.poster_path ? IMG + 'w342' + it.poster_path : undefined,
-          background: it.backdrop_path ? IMG + 'w780' + it.backdrop_path : undefined,
-          releaseInfo: ano || undefined,
-          description: `${textoGuia(guia)}\n\n${it.overview || ''}`.trim(),
-        };
-      } catch { return null; }
-    }));
-
-    for (const m of lote) {
-      if (m && !vistos.has(m.id)) { vistos.add(m.id); aprovados.push(m); }
-    }
-    if (pagina >= d.total_pages) break;
-  }
-  return aprovados.slice(skip, alvo);
-}
-
-// ───────────────────────── Streams (painel do Guia dos Pais) ─────────────────────────
+// ───────────────────────── Streams ─────────────────────────
+// Ids "gpbloq:tt123[:t:e]" só existem para títulos bloqueados: como nenhum outro addon
+// responde a esse prefixo, a tela do título fica sem links para assistir.
 async function streams(id, cfg) {
-  const imdb = id.split(':')[0];
+  const bloqueadoPeloId = id.startsWith(BLOQ);
+  const imdb = (bloqueadoPeloId ? id.slice(BLOQ.length) : id).split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return [];
   const url = `https://www.imdb.com/title/${imdb}/parentalguide/`;
   const [guia, br] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb)]);
-
-  if (!guia && !br) {
-    return [{ name: 'Guia dos Pais', description: 'Guia dos Pais indisponível para este título.\nToque para abrir no IMDb.', externalUrl: url }];
-  }
-  let veredito = '';
-  if (guia) {
-    const acima = CATEGORIAS.filter((c) => guia[c.key] != null && guia[c.key] > cfg.max[c.key]);
-    veredito = acima.length
-      ? `⛔ Acima do seu limite: ${acima.map((c) => c.rotulo).join(', ')}\n`
-      : '✅ Dentro dos seus limites\n';
-  }
-  return [{ name: 'Guia dos Pais', description: veredito + textoGuia(guia, br) + '\n(toque para ver detalhes no IMDb)', externalUrl: url }];
+  const { av, texto } = blocoGuia(guia, br, cfg);
+  const bloqueado = bloqueadoPeloId || av.bloqueado;
+  return [{
+    name: bloqueado ? '⛔ Guia dos Pais' : '✅ Guia dos Pais',
+    description: texto + '\n(toque para ver detalhes no IMDb)',
+    externalUrl: url,
+  }];
 }
 
 // ───────────────────────── Metadados (tela do título) ─────────────────────────
-function vereditoDe(guia, cfg) {
-  if (!guia) return '';
-  const acima = CATEGORIAS.filter((c) => guia[c.key] != null && guia[c.key] > cfg.max[c.key]);
-  return acima.length ? `⛔ Acima do seu limite: ${acima.map((c) => c.rotulo).join(', ')}\n` : '✅ Dentro dos seus limites\n';
-}
-
 async function meta(tipo, id, cfg) {
   const imdb = id.split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return null;
@@ -378,9 +353,15 @@ async function meta(tipo, id, cfg) {
   if (!base) return null; // o Stremio tenta o próximo addon de metadados
 
   const [guia, br, resumo] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb), resumoPtBR(imdb)]);
-  const bloco = `👪 GUIA DOS PAIS (IMDb)\n${vereditoDe(guia, cfg)}${textoGuia(guia, br)}`;
+  const { av, texto } = blocoGuia(guia, br, cfg);
+
+  if (av.bloqueado) {
+    // Redireciona os pedidos de "assistir" para ids que nenhum outro addon atende
+    if (tipo === 'movie') base.behaviorHints = Object.assign({}, base.behaviorHints, { defaultVideoId: BLOQ + imdb });
+    if (Array.isArray(base.videos)) base.videos = base.videos.map((v) => Object.assign({}, v, { id: BLOQ + v.id }));
+  }
   const original = resumo || base.description || '';
-  base.description = original ? `${original}\n\n${bloco}` : bloco;
+  base.description = original ? `${original}\n\n${texto}` : texto;
   return base;
 }
 
@@ -388,16 +369,14 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.1.0',
+    version: '1.2.0',
     name: 'Guia dos Pais (IMDb)',
-    description: 'Controle parental por categoria usando o Guia dos Pais do IMDb: filtra catálogos e mostra o guia completo (com a classificação indicativa do Brasil) em cada título.',
-    resources: ['catalog', 'meta', 'stream'],
+    logo: LOGO,
+    description: 'Controle parental com o Guia dos Pais do IMDb: mostra o guia abaixo do resumo e bloqueia os títulos acima dos seus limites, sem criar catálogos próprios.',
+    resources: ['meta', 'stream'],
     types: ['movie', 'series'],
-    idPrefixes: ['tt'],
-    catalogs: [
-      { type: 'movie', id: 'gp-filmes', name: 'Filmes populares – Guia dos Pais', extra: [{ name: 'skip' }, { name: 'search' }] },
-      { type: 'series', id: 'gp-series', name: 'Séries populares – Guia dos Pais', extra: [{ name: 'skip' }, { name: 'search' }] },
-    ],
+    idPrefixes: ['tt', BLOQ],
+    catalogs: [],
     behaviorHints: { configurable: configuravel },
   };
 }
@@ -410,15 +389,21 @@ function paginaConfig(cfg) {
           ${NIVEIS.map((n, i) => `<option value="${i}">${i === 3 ? 'Sem limite (até Grave)' : 'Permitir até: ' + n}</option>`).join('')}
         </select>
       </label>`).join('');
+  const idades = [[0, 'Livre'], [10, 'Até 10 anos'], [12, 'Até 12 anos'], [14, 'Até 14 anos'], [16, 'Até 16 anos'], [18, 'Sem limite']];
+  const blocoIdade = TMDB_KEY ? `
+      <label>🇧🇷 Classificação indicativa máxima
+        <select id="idade">${idades.map(([v, r]) => `<option value="${v}">${r}</option>`).join('')}</select>
+      </label>` : '';
   return `<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Guia dos Pais (IMDb) – Configurar</title>
+<link rel="icon" href="${LOGO}">
 <style>
   :root{color-scheme:light dark;--bg:#f6f5fb;--fg:#1b1b26;--card:#fff;--bd:#d9d7e6;--ac:#6b4cff}
   @media(prefers-color-scheme:dark){:root{--bg:#14141c;--fg:#ececf5;--card:#1e1e2a;--bd:#34344a}}
   body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
   main{max-width:520px;margin:0 auto;padding:24px 16px}
-  h1{font-size:1.4rem;margin:0 0 4px} p{opacity:.75;margin:0 0 20px}
+  h1{font-size:1.4rem;margin:0 0 4px;display:flex;align-items:center;gap:10px} h1 img{width:44px;height:44px;border-radius:10px} p{opacity:.75;margin:0 0 20px}
   .card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;display:grid;gap:14px}
   label{display:grid;gap:6px;font-weight:600}
   select,input{font:inherit;padding:10px;border-radius:10px;border:1px solid var(--bd);background:transparent;color:inherit}
@@ -426,25 +411,26 @@ function paginaConfig(cfg) {
   button.sec{background:transparent;color:var(--fg);border:1px solid var(--bd)}
   small{opacity:.7}
 </style></head><body><main>
-  <h1>👪 Guia dos Pais (IMDb)</h1>
-  <p>Escolha o nível máximo aceito em cada categoria. Títulos acima do limite somem dos catálogos e ficam marcados no painel do título.</p>
-  <div class="card">${linhas}
-    <label>Títulos sem Guia dos Pais no IMDb
-      <select id="semGuia"><option value="ocultar">Ocultar dos catálogos</option><option value="mostrar">Mostrar mesmo assim</option></select>
+  <h1><img src="${LOGO}" alt="">Guia dos Pais (IMDb)</h1>
+  <p>Escolha o nível máximo aceito em cada categoria. O guia aparece abaixo do resumo do título e, se passar do limite, o título fica bloqueado.</p>
+  <div class="card">${linhas}${blocoIdade}
+    <label>Categoria sem votos no IMDb
+      <select id="semVotos"><option value="bloquear">Bloquear (recomendado)</option><option value="permitir">Permitir</option></select>
     </label>
     <a class="btn" id="instalar" href="#">Instalar no Stremio</a>
     <input id="url" readonly>
     <button class="sec" id="copiar" type="button">Copiar link do addon</button>
-    <small>Os níveis vêm de votos de usuários do IMDb (Nenhum, Leve, Moderado, Grave).</small>
+    <small>Os níveis vêm de votos de usuários do IMDb (Nenhum, Leve, Moderado, Grave). Categoria sem votos não significa "sem conteúdo", por isso o padrão é bloquear.</small>
   </div>
 </main>
 <script>
   var CFG = ${JSON.stringify(cfg)};
   var sels = document.querySelectorAll('select[data-cat]');
   sels.forEach(function(s){ s.value = CFG.max[s.dataset.cat]; s.onchange = atualizar; });
-  var sg = document.getElementById('semGuia'); sg.value = CFG.semGuia; sg.onchange = atualizar;
+  var sv = document.getElementById('semVotos'); sv.value = CFG.semVotos; sv.onchange = atualizar;
+  var id = document.getElementById('idade'); if (id) { id.value = CFG.idade; id.onchange = atualizar; }
   function atualizar(){
-    var c = { max:{}, semGuia: sg.value };
+    var c = { max:{}, semVotos: sv.value, idade: id ? Number(id.value) : CFG.idade };
     sels.forEach(function(s){ c.max[s.dataset.cat] = Number(s.value); });
     var b64 = btoa(JSON.stringify(c)).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
     var url = location.protocol + '//' + location.host + '/' + b64 + '/manifest.json';
@@ -469,7 +455,7 @@ function json(res, obj, maxAge = 0, status = 200) {
   res.end(JSON.stringify(obj));
 }
 
-const RESERVADOS = new Set(['configure', 'manifest.json', 'catalog', 'stream', 'meta', 'health', 'debug']);
+const RESERVADOS = new Set(['configure', 'manifest.json', 'stream', 'meta', 'health', 'debug']);
 
 http.createServer(async (req, res) => {
   try {
@@ -495,23 +481,14 @@ http.createServer(async (req, res) => {
     }
     if (partes[0] === 'manifest.json') return json(res, manifest());
 
-    if (partes[0] === 'catalog') {
-      const tipo = dec(partes[1]);
-      const extra = new URLSearchParams((partes[3] || '').replace(/\.json$/, ''));
-      const skip = Math.max(0, parseInt(extra.get('skip') || '0', 10) || 0);
-      const busca = extra.get('search') || '';
-      const metas = ['movie', 'series'].includes(tipo) ? await catalogo(tipo, cfg, skip, busca) : [];
-      return json(res, { metas }, 600);
-    }
-
     if (partes[0] === 'meta') {
       const m = await meta(dec(partes[1]), dec(partes[2]), cfg);
-      return m ? json(res, { meta: m }, 3600) : json(res, { erro: 'sem metadados' }, 0, 404);
+      return m ? json(res, { meta: m }, 300) : json(res, { erro: 'sem metadados' }, 0, 404);
     }
 
     if (partes[0] === 'stream') {
       const lista = await streams(dec(partes[2]), cfg);
-      return json(res, { streams: lista }, 3600);
+      return json(res, { streams: lista }, 300);
     }
 
     json(res, { erro: 'não encontrado' }, 0, 404);
@@ -521,5 +498,5 @@ http.createServer(async (req, res) => {
   }
 }).listen(PORT, () => {
   console.log(`Guia dos Pais (IMDb) rodando em http://localhost:${PORT}/configure`);
-  if (!TMDB_KEY) console.log('⚠ Defina TMDB_KEY para habilitar os catálogos e a classificação indicativa do Brasil.');
+  if (!TMDB_KEY) console.log('⚠ Defina TMDB_KEY (opcional) para ter o resumo em português e a classificação indicativa do Brasil.');
 });
