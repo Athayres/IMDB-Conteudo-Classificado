@@ -362,7 +362,6 @@ async function meta(tipo, id, cfg) {
 
   // Idade (ex.: "Idade: 16") como 1º item da linha de Gêneros: sem ícone, na mesma linha dos gêneros.
   // O Stremio Web monta os gêneros a partir de "links"; clientes antigos leem "genres".
-  let idadeNoGenero = false;
   if (br) {
     const idadeTag = `Idade: ${br === 'L' ? 'Livre' : br}`;
     base.genres = [idadeTag, ...(base.genres || [])];
@@ -372,16 +371,21 @@ async function meta(tipo, id, cfg) {
       if (i >= 0) {
         links.splice(i, 0, { name: idadeTag, category: 'Genres', url: `https://www.imdb.com/title/${imdb}/parentalguide/` });
         base.links = links;
-        idadeNoGenero = true;
       }
     }
   }
-  // Se não deu para entrar nos gêneros, a idade fica no bloco abaixo do resumo
-  const { av, texto } = blocoGuia(guia, br, cfg, !idadeNoGenero);
+  // A idade também vai no bloco abaixo do resumo (clientes que não desenham os gêneros só mostram esse bloco)
+  const { av, texto } = blocoGuia(guia, br, cfg);
 
   if (av.bloqueado) {
     if (tipo === 'movie') base.behaviorHints = Object.assign({}, base.behaviorHints, { defaultVideoId: BLOQ + imdb });
     if (Array.isArray(base.videos)) base.videos = base.videos.map((v) => Object.assign({}, v, { id: BLOQ + v.id }));
+  }
+
+  // Em séries, ao escolher um episódio o Stremio Web troca o resumo da série pelo "overview" do episódio:
+  // o guia também é acrescentado lá, senão ele some justamente na tela dos vídeos.
+  if (Array.isArray(base.videos)) {
+    base.videos = base.videos.map((v) => Object.assign({}, v, { overview: v.overview ? `${v.overview}\n\n${texto}` : texto }));
   }
 
   const original = resumo || base.description || '';
@@ -393,7 +397,7 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.4.6',
+    version: '1.4.7',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia, classificação indicativa nos gêneros e bloqueia títulos.',
