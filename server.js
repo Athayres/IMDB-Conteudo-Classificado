@@ -22,7 +22,7 @@ const BLOQ = 'gpbloq:'; // prefixo de id para títulos bloqueados
 const LOGO = 'https://raw.githubusercontent.com/Athayres/IMDB-Conteudo-Classificado/refs/heads/main/logo_family.jpg';
 
 const NIVEIS = ['Nenhum', 'Leve', 'Moderado', 'Grave'];
-const COR = ['⚪', '🟢', '🟡', '🔴']; // Nenhum, Leve, Moderado, Grave
+const COR = ['⬜', '🟩', '🟨', '🟥']; // Nenhum, Leve, Moderado, Grave (todos quadrados cheios)
 const CATEGORIAS = [
   { key: 'sexo', rotulo: 'Sexo e nudez', icone: '🔞', ids: ['NUDITY'], texto: /nudity|sex/i },
   { key: 'violencia', rotulo: 'Violência e sangue', icone: '🩸', ids: ['VIOLENCE'], texto: /violence|gore/i },
