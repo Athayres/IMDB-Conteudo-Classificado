@@ -36,6 +36,7 @@ const CFG_PADRAO = { max: { sexo: 1, violencia: 2, palavroes: 2, drogas: 2, sust
 // ───────────────────────── cache em disco ─────────────────────────
 let cache = { guias: {}, ids: {}, br: {} };
 try { cache = Object.assign(cache, JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'))); } catch { /* primeiro uso */ }
+if (cache.v !== 2) { cache.guias = {}; cache.v = 2; }
 let salvarTimer = null;
 function salvar() {
   clearTimeout(salvarTimer);
@@ -81,61 +82,143 @@ function lerConfig(b64) {
 }
 
 // ───────────────────────── IMDb: Guia dos Pais ─────────────────────────
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+const NULO_TTL = 12 * 3600 * 1000; // "não achei guia" é lembrado só por 12h
+
 async function baixarPaginaIMDb(imdbId) {
   try {
     const r = await fetch(`https://www.imdb.com/title/${imdbId}/parentalguide/`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-        Accept: 'text/html',
-      },
-      signal: AbortSignal.timeout(10000),
+      headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9', Accept: 'text/html,application/xhtml+xml' },
+      signal: AbortSignal.timeout(12000),
     });
-    return r.ok ? await r.text() : null;
-  } catch { return null; }
+    return { status: r.status, html: await r.text() };
+  } catch (e) { return { status: 0, html: '', erro: String((e && e.message) || e) }; }
 }
 
-function acharCategorias(no, prof = 0) {
-  if (!no || typeof no !== 'object' || prof > 14) return null;
-  if (Array.isArray(no.categories) && no.categories.some((c) => c && c.category && c.category.id)) return no.categories;
-  for (const v of Object.values(no)) {
-    const r = acharCategorias(v, prof + 1);
-    if (r) return r;
+const GQL_QUERY = 'query($id: ID!){ title(id: $id){ parentsGuide{ categories{ category{ id text } severity{ id text votedFor } totalSeverityVotes } } } }';
+async function baixarGraphQL(imdbId) {
+  try {
+    const r = await fetch('https://api.graphql.imdb.com/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': UA, Origin: 'https://www.imdb.com', Referer: 'https://www.imdb.com/' },
+      body: JSON.stringify({ query: GQL_QUERY, variables: { id: imdbId } }),
+      signal: AbortSignal.timeout(12000),
+    });
+    const texto = await r.text();
+    let json = null;
+    try { json = JSON.parse(texto); } catch { /* não é JSON */ }
+    return { status: r.status, json, texto };
+  } catch (e) { return { status: 0, json: null, texto: '', erro: String((e && e.message) || e) }; }
+}
+
+// Converte o "severity" de vários formatos possíveis em 0..3 (ou null se sem votos)
+function nivelDoItem(el) {
+  const s = el.severity ?? el.severitySummary;
+  if (s != null) {
+    const n = typeof s === 'object' ? nivelDe(s.id ?? s.text ?? s.value ?? s.label) : nivelDe(s);
+    if (n !== null) return n;
   }
+  const votos = [0, 0, 0, 0];
+  let tem = false;
+  if (el.votes && typeof el.votes === 'object') {
+    [['noneVotes', 0], ['mildVotes', 1], ['moderateVotes', 2], ['severeVotes', 3]].forEach(([k, i]) => {
+      const n = Number(el.votes[k]);
+      if (n > 0) { votos[i] += n; tem = true; }
+    });
+  }
+  const lista = el.severityBreakdown || el.severityVotes;
+  if (Array.isArray(lista)) {
+    for (const v of lista) {
+      const i = nivelDe(v.voteType ?? v.id ?? v.text);
+      const n = Number(v.votedFor ?? v.votes ?? v.count);
+      if (i !== null && n > 0) { votos[i] += n; tem = true; }
+    }
+  }
+  if (!tem) return null;
+  const total = votos.reduce((a, b) => a + b, 0);
+  let acum = 0;
+  for (let i = 0; i < 4; i++) { acum += votos[i]; if (acum >= total / 2) return i; } // mediana dos votos
   return null;
 }
 
-function extrairGuia(html) {
-  const m = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
-  if (!m) return null;
-  let dados;
-  try { dados = JSON.parse(m[1]); } catch { return null; }
-  const cats = acharCategorias(dados);
-  if (!cats) return null;
+function coletarCategorias(no, saida = [], prof = 0) {
+  if (!no || typeof no !== 'object' || prof > 16) return saida;
+  if (Array.isArray(no) && no.some((e) => e && typeof e === 'object' && e.category && (typeof e.category === 'string' || e.category.id || e.category.text))) saida.push(no);
+  for (const v of Object.values(no)) coletarCategorias(v, saida, prof + 1);
+  return saida;
+}
+
+function guiaDeJson(dados) {
   const guia = {};
   let achou = false;
-  for (const c of cats) {
-    const id = String(c.category.id || '').toUpperCase();
-    const txt = String(c.category.text || '');
-    const alvo = CATEGORIAS.find((x) => x.ids.includes(id) || x.texto.test(txt));
-    if (!alvo) continue;
-    const sev = c.severity || c.severitySummary || {};
-    const nivel = nivelDe(sev.id ?? sev.text ?? sev.value);
-    guia[alvo.key] = nivel; // null = sem votos suficientes
-    if (nivel !== null) achou = true;
+  for (const arr of coletarCategorias(dados)) {
+    for (const el of arr) {
+      if (!el || !el.category) continue;
+      const cat = el.category;
+      const id = String(typeof cat === 'string' ? cat : cat.id || '').toUpperCase();
+      const txt = typeof cat === 'string' ? cat : String(cat.text || '');
+      const alvo = CATEGORIAS.find((x) => x.ids.includes(id) || x.texto.test(txt) || x.texto.test(id));
+      if (!alvo) continue;
+      const nivel = nivelDoItem(el);
+      if (guia[alvo.key] == null) guia[alvo.key] = nivel;
+      if (nivel !== null) achou = true;
+    }
   }
   return achou ? guia : null;
 }
 
+function guiaDeHtml(html) {
+  const slugs = { sexo: 'nudity', violencia: 'violence', palavroes: 'profanity', drogas: 'alcohol', susto: 'frightening' };
+  const guia = {};
+  let achou = false;
+  for (const [key, slug] of Object.entries(slugs)) {
+    const i = html.search(new RegExp(`advisory-${slug}`, 'i'));
+    if (i < 0) continue;
+    const trecho = html.slice(i, i + 1500).replace(/<[^>]+>/g, ' ');
+    const m = trecho.match(/\b(None|Mild|Moderate|Severe)\b/);
+    if (m) { guia[key] = nivelDe(m[1]); achou = true; }
+  }
+  return achou ? guia : null;
+}
+
+function extrairGuia(html) {
+  const m = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+  if (m) {
+    try { const g = guiaDeJson(JSON.parse(m[1])); if (g) return g; } catch { /* tenta o HTML */ }
+  }
+  return guiaDeHtml(html);
+}
+
+// Tenta GraphQL primeiro, depois a página. Devolve também um diagnóstico.
+async function consultarIMDb(imdbId) {
+  const dbg = { imdbId };
+  const gq = await baixarGraphQL(imdbId);
+  dbg.graphql = { status: gq.status, erro: gq.erro, inicio: (gq.texto || '').slice(0, 300) };
+  if (gq.json) {
+    const g = guiaDeJson(gq.json);
+    if (g) return { guia: g, dbg };
+  }
+  const p = await baixarPaginaIMDb(imdbId);
+  dbg.pagina = {
+    status: p.status, erro: p.erro, tamanho: p.html.length,
+    temNextData: p.html.includes('__NEXT_DATA__'),
+    temAdvisory: /advisory-nudity/i.test(p.html),
+    titulo: (p.html.match(/<title>([^<]*)<\/title>/i) || [])[1] || null,
+    inicio: p.html.slice(0, 300),
+  };
+  const g = p.html ? extrairGuia(p.html) : null;
+  // falhou = não conseguimos nem ler a página (bloqueio/rede): não vale a pena gravar no cache
+  return { guia: g, falhou: !g && p.status !== 200, dbg };
+}
+
 async function buscarGuia(imdbId) {
   const c = cache.guias[imdbId];
-  if (c && Date.now() - c.t < GUIA_TTL) return c.g;
-  const html = await baixarPaginaIMDb(imdbId);
-  if (!html) return null; // falha de rede: não grava no cache
-  const g = extrairGuia(html);
-  cache.guias[imdbId] = { t: Date.now(), g };
+  if (c && Date.now() - c.t < (c.g ? GUIA_TTL : NULO_TTL)) return c.g;
+  const r = await consultarIMDb(imdbId);
+  if (r.falhou) return null;
+  cache.guias[imdbId] = { t: Date.now(), g: r.guia };
   salvar();
-  return g;
+  return r.guia;
 }
 
 function passa(guia, cfg) {
@@ -144,7 +227,9 @@ function passa(guia, cfg) {
 }
 
 function textoGuia(guia, br) {
-  const linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia && guia[c.key] != null ? NIVEIS[guia[c.key]] : 'sem votos'}`);
+  const linhas = guia
+    ? CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? NIVEIS[guia[c.key]] : 'sem votos'}`)
+    : ['⚠ Não consegui ler o Guia dos Pais do IMDb agora'];
   if (br) linhas.unshift(`🇧🇷 Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
   return linhas.join('\n');
 }
@@ -340,7 +425,7 @@ function json(res, obj, maxAge = 0, status = 200) {
   res.end(JSON.stringify(obj));
 }
 
-const RESERVADOS = new Set(['configure', 'manifest.json', 'catalog', 'stream', 'health']);
+const RESERVADOS = new Set(['configure', 'manifest.json', 'catalog', 'stream', 'health', 'debug']);
 
 http.createServer(async (req, res) => {
   try {
@@ -349,6 +434,12 @@ http.createServer(async (req, res) => {
     const partes = pathname.split('/').filter(Boolean);
     if (!partes.length) { res.writeHead(302, { Location: '/configure' }); return res.end(); }
     if (partes[0] === 'health') return json(res, { ok: true });
+    if (partes[0] === 'debug') {
+      const id = (partes[1] || '').replace(/\.json$/, '');
+      if (!/^tt\d+$/.test(id)) return json(res, { erro: 'use /debug/tt0111161' }, 0, 400);
+      const r = await consultarIMDb(id);
+      return json(res, { guia: r.guia, diagnostico: r.dbg });
+    }
 
     const cfgB64 = RESERVADOS.has(partes[0]) ? '' : partes.shift();
     const cfg = lerConfig(cfgB64);
