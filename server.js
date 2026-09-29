@@ -390,7 +390,7 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.4.0',
+    version: '1.4.1',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia, classificação indicativa nos gêneros e bloqueia títulos.',
