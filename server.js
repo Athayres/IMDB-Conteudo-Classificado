@@ -333,12 +333,15 @@ async function streams(id, cfg) {
   const bloqueadoPeloId = id.startsWith(BLOQ);
   const imdb = (bloqueadoPeloId ? id.slice(BLOQ.length) : id).split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return [];
+  // Modo informativo: nunca mostra nada junto aos vídeos (o guia fica só abaixo do resumo)
+  if (!bloqueadoPeloId && cfg.idade === 18) return [];
   const url = `https://www.imdb.com/title/${imdb}/parentalguide/`;
   const [guia, br] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb)]);
   const { av, texto } = blocoGuia(guia, br, cfg);
-  const bloqueado = bloqueadoPeloId || av.bloqueado;
+  // Só aparece na lista de vídeos quando há motivo: título bloqueado
+  if (!bloqueadoPeloId && !av.bloqueado) return [];
   return [{
-    name: bloqueado ? '⛔ Guia dos Pais' : 'ℹ️ Guia dos Pais',
+    name: '⛔ Guia dos Pais',
     description: texto + '\n\n(Toque para ver detalhes no IMDb)',
     externalUrl: url,
   }];
@@ -363,10 +366,19 @@ async function meta(tipo, id, cfg) {
     if (Array.isArray(base.videos)) base.videos = base.videos.map((v) => Object.assign({}, v, { id: BLOQ + v.id }));
   }
 
-  // 🔞 Adiciona a Classificação Indicativa como o 1º gênero (aparece antes de todos na interface)
+  // 🔞 Classificação indicativa como 1ª etiqueta: depois da nota do IMDb e antes dos gêneros.
+  // O Stremio novo monta os gêneros a partir de "links"; os antigos, de "genres": mexe nos dois.
   if (br) {
     const tagIdade = `🔞 ${br === 'L' ? 'Livre' : br + ' anos'}`;
     base.genres = [tagIdade, ...(base.genres || [])];
+    if (Array.isArray(base.links)) {
+      const links = base.links.slice();
+      const i = links.findIndex((l) => l && l.category === 'Genres');
+      if (i >= 0) {
+        links.splice(i, 0, { name: tagIdade, category: 'Genres', url: `https://www.imdb.com/title/${imdb}/parentalguide/` });
+        base.links = links;
+      }
+    }
   }
 
   const original = resumo || base.description || '';
