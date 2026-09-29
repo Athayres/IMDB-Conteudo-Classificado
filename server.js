@@ -2,7 +2,8 @@
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
  *  - Mostra o guia do IMDb e classificação indicativa do Brasil (via TMDB).
- *  - Mostra a classificação indicativa (só o número, sem ícone) como 1º item da linha de Gêneros ("Idade: 16").
+ *  - Cria menus interativos "Classificação" e "Guia dos Pais" abaixo da sinopse.
+ *  - Mostra a classificação indicativa como 1º item na linha de Gêneros ("Idade: 16").
  *  - Se a idade for "Sem limite", funciona apenas como aviso (não bloqueia nada).
  *  - Se for definida uma idade (ex: 16), bloqueia títulos dessa idade para cima (16 e 18 anos).
  *
@@ -29,7 +30,7 @@ const CATEGORIAS = [
   { key: 'violencia', rotulo: 'Violência e sangue', icone: '🩸', ids: ['VIOLENCE'], texto: /violence|gore/i },
   { key: 'palavroes', rotulo: 'Palavrões', icone: '🤬', ids: ['PROFANITY'], texto: /profanity/i },
   { key: 'drogas', rotulo: 'Álcool, drogas e fumo', icone: '🍺', ids: ['ALCOHOL'], texto: /alcohol|drugs|smoking/i },
-  { key: 'susto', rotulo: 'Cenas intensas / assustadoras', icone: '😱', ids: ['FRIGHTENING'], texto: /frightening|intense/i },
+  { key: 'susto', rotulo: 'Cenas intensas e assustadoras', icone: '😱', ids: ['FRIGHTENING'], texto: /frightening|intense/i },
 ];
 
 // Padrão: Sem limite (18 = Apenas aviso, sem bloqueios)
@@ -259,39 +260,24 @@ function avaliar(guia, br, cfg) {
 }
 
 function textoGuia(guia, br) {
-  let linhas = [];
-  if (br) {
-    linhas.push(`👪 Classificação Indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
-  }
+  let linhas;
+  if (guia === undefined) linhas = ['ℹ️ Guia dos Pais do IMDb indisponível no momento'];
+  else if (guia === null) linhas = ['ℹ️ Este título não possui Guia dos Pais no IMDb (sem votos)'];
+  else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]}${NIVEIS[guia[c.key]]}` : '❔ sem votos'}`);
+  if (br) linhas.unshift(`👪 Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
 
-  if (guia === undefined) {
-    linhas.push('ℹ️ Guia dos Pais do IMDb indisponível no momento');
-  } else if (guia === null) {
-    linhas.push('ℹ️ Este título não possui Guia dos Pais no IMDb (sem votos)');
-  } else {
-    CATEGORIAS.forEach((c) => {
-      const n = guia[c.key];
-      const status = n != null ? `${COR[n]} ${NIVEIS[n]}` : '❔ sem votos';
-      linhas.push(`${c.icone} ${c.rotulo}: ${status}`);
-    });
-  }
-
-  return linhas.join('\n');
+  return linhas.map((l) => '• ' + l).join('\n');
 }
 
 function blocoGuia(guia, br, cfg, mostrarIdade = true) {
   const av = avaliar(guia, br, cfg);
-  let cabecalho = '✅ PAINEL GUIA DOS PAIS (LIBERADO)';
+  let topo = '✅ Liberado pelo Guia dos Pais\n';
   if (av.bloqueado) {
-    cabecalho = '⛔ PAINEL GUIA DOS PAIS (BLOQUEADO)';
+    topo = '⛔ BLOQUEADO pelo Guia dos Pais\n';
   } else if (cfg.idade === 18) {
-    cabecalho = 'ℹ️ PAINEL GUIA DOS PAIS (INFORMATIVO)';
+    topo = 'ℹ️ GUIA DOS PAIS (Modo Informativo)\n';
   }
-
-  const conteudo = textoGuia(guia, mostrarIdade ? br : null);
-  const painel = `─────── ${cabecalho} ───────\n${conteudo}\n─────────────────────────────────────────`;
-
-  return { av, texto: painel };
+  return { av, texto: `${topo}${textoGuia(guia, mostrarIdade ? br : null)}` };
 }
 
 // ───────────────────────── TMDB ─────────────────────────
@@ -357,7 +343,7 @@ async function streams(id, cfg) {
   if (!bloqueado) return [];
   return [{
     name: '⛔ Guia dos Pais',
-    description: texto + '\n\n(Toque para ver detalhes no IMDb)',
+    description: texto.replace(/^• /gm, '') + '\n\n(Toque para ver detalhes no IMDb)',
     externalUrl: url,
   }];
 }
@@ -375,15 +361,34 @@ async function meta(tipo, id, cfg) {
 
   const [guia, br, resumo] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb), resumoPtBR(imdb)]);
 
-  if (br) {
-    const idadeTag = `Idade: ${br === 'L' ? 'Livre' : br}`;
-    base.genres = [idadeTag, ...(base.genres || [])];
+  base.links = Array.isArray(base.links) ? base.links.slice() : [];
 
-    base.links = Array.isArray(base.links) ? base.links.slice() : [];
+  if (br) {
+    const idadeTexto = br === 'L' ? 'Livre' : `${br} anos`;
+    const idadeTag = `Idade: ${br === 'L' ? 'Livre' : br}`;
+
+    // Adiciona uma linha de menu dedicada "Classificação" abaixo da sinopse
     base.links.unshift({
-      name: idadeTag,
-      category: 'Genres',
+      name: idadeTexto,
+      category: 'Classificação',
       url: `https://www.imdb.com/title/${imdb}/parentalguide/`
+    });
+
+    // Mantém também o gênero "Idade: XX"
+    base.genres = [idadeTag, ...(base.genres || [])];
+  }
+
+  // Adiciona a linha de menu dedicada "Guia dos Pais" abaixo da sinopse
+  if (guia && typeof guia === 'object') {
+    CATEGORIAS.forEach((c) => {
+      const n = guia[c.key];
+      if (n != null) {
+        base.links.push({
+          name: `${c.icone} ${c.rotulo}: ${NIVEIS[n]}`,
+          category: 'Guia dos Pais',
+          url: `https://www.imdb.com/title/${imdb}/parentalguide/`
+        });
+      }
     });
   }
 
@@ -395,11 +400,11 @@ async function meta(tipo, id, cfg) {
   }
 
   if (Array.isArray(base.videos)) {
-    base.videos = base.videos.map((v) => Object.assign({}, v, { overview: v.overview ? `${v.overview}\n\n${texto}` : texto }));
+    base.videos = base.videos.map((v) => Object.assign({}, v, { overview: v.overview ? `${v.overview}\n\n───────────────\n${texto}` : texto }));
   }
 
   const original = resumo || base.description || '';
-  base.description = original ? `${original}\n\n${texto}` : texto;
+  base.description = original ? `${original}\n\n───────────────\n${texto}` : texto;
   return base;
 }
 
