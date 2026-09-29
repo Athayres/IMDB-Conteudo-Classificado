@@ -58,7 +58,7 @@ function limitar(n) {
 const naFilaIMDb = limitar(3);
 
 function nivelDe(v) {
-  switch (String(v || '').toUpperCase()) {
+  switch (String(v || '').toUpperCase().replace(/VOTES$/, '')) { // aceita "mildVotes", "MILD", "Mild"
     case 'NONE': return 0;
     case 'MILD': return 1;
     case 'MODERATE': return 2;
@@ -115,8 +115,11 @@ async function baixarGraphQL(imdbId) {
 function nivelDoItem(el) {
   const s = el.severity ?? el.severitySummary;
   if (s != null) {
-    const n = typeof s === 'object' ? nivelDe(s.id ?? s.text ?? s.value ?? s.label) : nivelDe(s);
-    if (n !== null) return n;
+    const candidatos = typeof s === 'object' ? [s.text, s.id, s.value, s.label] : [s];
+    for (const c of candidatos) {
+      const n = nivelDe(c);
+      if (n !== null) return n;
+    }
   }
   const votos = [0, 0, 0, 0];
   let tem = false;
@@ -129,7 +132,7 @@ function nivelDoItem(el) {
   const lista = el.severityBreakdown || el.severityVotes;
   if (Array.isArray(lista)) {
     for (const v of lista) {
-      const i = nivelDe(v.voteType ?? v.id ?? v.text);
+      const i = [v.voteType, v.id, v.text].map(nivelDe).find((x) => x !== null) ?? null;
       const n = Number(v.votedFor ?? v.votes ?? v.count);
       if (i !== null && n > 0) { votos[i] += n; tem = true; }
     }
