@@ -33,7 +33,7 @@ const CATEGORIAS = [
 ];
 
 // Padrão: Sem limite (18 = Apenas aviso, sem bloqueios)
-const CFG_PADRAO = { max: { sexo: 3, violencia: 3, palavroes: 3, drogas: 3, susto: 3 }, idade: 18, painel: 'bloqueado' };
+const CFG_PADRAO = { max: { sexo: 3, violencia: 3, palavroes: 3, drogas: 3, susto: 3 }, idade: 18 };
 
 // ───────────────────────── Cache em disco ─────────────────────────
 let cache = { guias: {}, ids: {}, br: {} };
@@ -80,7 +80,6 @@ function lerConfig(b64) {
     }
     const idade = Number(j.idade);
     if ([0, 10, 12, 14, 16, 18].includes(idade)) cfg.idade = idade;
-    cfg.painel = j.painel === 'sempre' ? 'sempre' : 'bloqueado';
   } catch { /* usa padrão */ }
   return cfg;
 }
@@ -263,10 +262,9 @@ function textoGuia(guia, br) {
   let linhas;
   if (guia === undefined) linhas = ['ℹ️ Guia dos Pais do IMDb indisponível no momento'];
   else if (guia === null) linhas = ['ℹ️ Este título não possui Guia dos Pais no IMDb (sem votos)'];
-  else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]}${NIVEIS[guia[c.key]]}` : '❔ sem votos'}`);
+  else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]}${NIVEIS[guia[c.key]]}` : '机制 sem votos'}`);
   if (br) linhas.unshift(`👪 Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
 
-  // Utiliza \n\n para o Markdown do Stremio Web interpretar como parágrafos separados
   return linhas.map((l) => '• ' + l).join('\n\n');
 }
 
@@ -336,16 +334,14 @@ async function streams(id, cfg) {
   const bloqueadoPeloId = id.startsWith(BLOQ);
   const imdb = (bloqueadoPeloId ? id.slice(BLOQ.length) : id).split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return [];
-  const sempre = cfg.painel === 'sempre';
-  // Padrão: nada junto aos vídeos, a menos que o título esteja bloqueado (ou o painel esteja em "sempre")
-  if (!bloqueadoPeloId && cfg.idade === 18 && !sempre) return [];
+  if (!bloqueadoPeloId && cfg.idade === 18) return [];
   const url = `https://www.imdb.com/title/${imdb}/parentalguide/`;
   const [guia, br] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb)]);
   const { av, texto } = blocoGuia(guia, br, cfg);
   const bloqueado = bloqueadoPeloId || av.bloqueado;
-  if (!bloqueado && !sempre) return [];
+  if (!bloqueado) return [];
   return [{
-    name: bloqueado ? '⛔ Guia dos Pais' : '👪 Guia dos Pais',
+    name: '⛔ Guia dos Pais',
     description: texto.replace(/^• /gm, '') + '\n\n(Toque para ver detalhes no IMDb)',
     externalUrl: url,
   }];
@@ -364,18 +360,16 @@ async function meta(tipo, id, cfg) {
 
   const [guia, br, resumo] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb), resumoPtBR(imdb)]);
 
-  // Idade (ex.: "Idade: 16") como 1º item da linha de Gêneros: sem ícone, na mesma linha dos gêneros.
   if (br) {
     const idadeTag = `Idade: ${br === 'L' ? 'Livre' : br}`;
     base.genres = [idadeTag, ...(base.genres || [])];
-    if (Array.isArray(base.links)) {
-      const links = base.links.slice();
-      const i = links.findIndex((l) => l && l.category === 'Genres');
-      if (i >= 0) {
-        links.splice(i, 0, { name: idadeTag, category: 'Genres', url: `https://www.imdb.com/title/${imdb}/parentalguide/` });
-        base.links = links;
-      }
-    }
+
+    base.links = Array.isArray(base.links) ? base.links.slice() : [];
+    base.links.unshift({
+      name: idadeTag,
+      category: 'Genres',
+      url: `https://www.imdb.com/title/${imdb}/parentalguide/`
+    });
   }
 
   const { av, texto } = blocoGuia(guia, br, cfg);
@@ -385,7 +379,6 @@ async function meta(tipo, id, cfg) {
     if (Array.isArray(base.videos)) base.videos = base.videos.map((v) => Object.assign({}, v, { id: BLOQ + v.id }));
   }
 
-  // Em séries, inclui no resumo dos episódios
   if (Array.isArray(base.videos)) {
     base.videos = base.videos.map((v) => Object.assign({}, v, { overview: v.overview ? `${v.overview}\n\n───────────────\n\n${texto}` : texto }));
   }
@@ -451,12 +444,6 @@ function paginaConfig(cfg) {
       </select>
     </label>
     ${linhas}
-    <label>📋 Painel do Guia na lista de vídeos
-      <select id="painel">
-        <option value="bloqueado">Só quando o título estiver bloqueado</option>
-        <option value="sempre">Sempre mostrar (texto em linhas separadas)</option>
-      </select>
-    </label>
     <a class="btn" id="instalar" href="#">Instalar no Stremio</a>
     <input id="url" readonly>
     <button class="sec" id="copiar" type="button">Copiar link do addon</button>
@@ -468,9 +455,8 @@ function paginaConfig(cfg) {
   var sels = document.querySelectorAll('select[data-cat]');
   sels.forEach(function(s){ s.value = CFG.max[s.dataset.cat]; s.onchange = atualizar; });
   var id = document.getElementById('idade'); if (id) { id.value = CFG.idade; id.onchange = atualizar; }
-  var pn = document.getElementById('painel'); pn.value = CFG.painel; pn.onchange = atualizar;
   function atualizar(){
-    var c = { max:{}, idade: id ? Number(id.value) : CFG.idade, painel: pn.value };
+    var c = { max:{}, idade: id ? Number(id.value) : CFG.idade };
     sels.forEach(function(s){ c.max[s.dataset.cat] = Number(s.value); });
     var b64 = btoa(JSON.stringify(c)).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
     var url = location.protocol + '//' + location.host + '/' + b64 + '/manifest.json';
