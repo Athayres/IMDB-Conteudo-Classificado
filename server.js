@@ -1,9 +1,9 @@
 'use strict';
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
- *  - Mostra a classificação indicativa e o guia do IMDb apenas nos menus (links/gêneros).
- *  - Mantém a sinopse limpa, sem anexar blocos de texto no final.
- *  - Bloqueia títulos de acordo com as regras configuradas.
+ *  - No App (Linux, Windows, Mobile): exibe o texto do guia abaixo da sinopse.
+ *  - No Navegador Web: mantém a sinopse limpa sem o bloco de texto.
+ *  - Mantém links/botões nos menus em ambas as plataformas.
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave node server.js   →   http://localhost:7000/configure
@@ -31,7 +31,6 @@ const CATEGORIAS = [
   { key: 'susto', rotulo: 'Cenas intensas e assustadoras', icone: '😱', ids: ['FRIGHTENING'], texto: /frightening|intense/i },
 ];
 
-// Padrão: Sem limite (18 = Apenas aviso, sem bloqueios)
 const CFG_PADRAO = { max: { sexo: 3, violencia: 3, palavroes: 3, drogas: 3, susto: 3 }, idade: 18 };
 
 // ───────────────────────── Cache em disco ─────────────────────────
@@ -42,6 +41,22 @@ let salvarTimer = null;
 function salvar() {
   clearTimeout(salvarTimer);
   salvarTimer = setTimeout(() => fs.writeFile(CACHE_FILE, JSON.stringify(cache), () => {}), 2000);
+}
+
+// ───────────────────────── Identificação do Sistema ─────────────────────────
+function identificarSistema(ua = '') {
+  const u = ua.toLowerCase();
+  if (u.includes('stremio')) {
+    if (u.includes('linux')) return 'App Linux';
+    if (u.includes('win') || u.includes('windows')) return 'App Windows';
+    if (u.includes('android')) return 'App Android';
+    if (u.includes('mac') || u.includes('darwin')) return 'App macOS';
+    return 'App Stremio';
+  }
+  if (u.includes('linux')) return 'Web (Linux)';
+  if (u.includes('win') || u.includes('windows')) return 'Web (Windows)';
+  if (u.includes('mac') || u.includes('darwin')) return 'Web (macOS)';
+  return 'Web / Navegador';
 }
 
 // ───────────────────────── Utilidades ─────────────────────────
@@ -238,7 +253,6 @@ function avaliar(guia, br, cfg) {
   }
 
   const motivos = [];
-
   const idade = idadeDeBR(br);
   if (idade !== null && idade >= cfg.idade) {
     const nomeIdade = idade === 0 ? 'Livre' : idade + ' anos';
@@ -261,7 +275,7 @@ function textoGuia(guia, br) {
   let linhas;
   if (guia === undefined) linhas = ['ℹ️ Guia dos Pais do IMDb indisponível no momento'];
   else if (guia === null) linhas = ['ℹ️ Este título não possui Guia dos Pais no IMDb (sem votos)'];
-  else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]}${NIVEIS[guia[c.key]]}` : '护 sem votos'}`);
+  else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]}${NIVEIS[guia[c.key]]}` : 'sem votos'}`);
   if (br) linhas.unshift(`👪 Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
 
   return linhas.map((l) => '• ' + l).join('\n');
@@ -347,7 +361,7 @@ async function streams(id, cfg) {
 }
 
 // ───────────────────────── Metadados ─────────────────────────
-async function meta(tipo, id, cfg) {
+async function meta(tipo, id, cfg, sistema = 'Desconhecido') {
   const imdb = id.split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return null;
   let base = null;
@@ -365,18 +379,15 @@ async function meta(tipo, id, cfg) {
     const idadeTexto = br === 'L' ? 'Livre' : `${br} anos`;
     const idadeTag = `Idade: ${br === 'L' ? 'Livre' : br}`;
 
-    // Adiciona ao menu de Classificação
     base.links.unshift({
       name: idadeTexto,
       category: 'Classificação',
       url: `https://www.imdb.com/title/${imdb}/parentalguide/`
     });
 
-    // Mantém na lista de gêneros para atalho rápido
     base.genres = [idadeTag, ...(base.genres || [])];
   }
 
-  // Adiciona os botões de cada item ao menu "Guia dos Pais"
   if (guia && typeof guia === 'object') {
     CATEGORIAS.forEach((c) => {
       const n = guia[c.key];
@@ -390,16 +401,21 @@ async function meta(tipo, id, cfg) {
     });
   }
 
-  const { av } = blocoGuia(guia, br, cfg);
+  const { av, texto } = blocoGuia(guia, br, cfg);
 
   if (av.bloqueado) {
     if (tipo === 'movie') base.behaviorHints = Object.assign({}, base.behaviorHints, { defaultVideoId: BLOQ + imdb });
     if (Array.isArray(base.videos)) base.videos = base.videos.map((v) => Object.assign({}, v, { id: BLOQ + v.id }));
   }
 
-  // Mantém a sinopse limpa (apenas a descrição do filme, sem anexar o texto do guia)
-  if (resumo) {
-    base.description = resumo;
+  const descBase = resumo || base.description || '';
+
+  // Exibe o texto do guia abaixo da sinopse SOMENTE no App. No Navegador (Web), mantém a sinopse limpa.
+  if (sistema.startsWith('App')) {
+    const infoSistema = `💻 Sistema: ${sistema}`;
+    base.description = `${descBase}\n\n${texto}\n• ${infoSistema}`.trim();
+  } else {
+    base.description = descBase;
   }
 
   return base;
@@ -409,7 +425,7 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.5.1',
+    version: '1.5.3',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia, classificação indicativa nos gêneros e bloqueia títulos.',
@@ -516,6 +532,7 @@ http.createServer(async (req, res) => {
 
     const cfgB64 = RESERVADOS.has(partes[0]) ? '' : partes.shift();
     const cfg = lerConfig(cfgB64);
+    const sistema = identificarSistema(req.headers['user-agent']);
     const dec = (s) => decodeURIComponent((s || '').replace(/\.json$/, ''));
 
     if (partes[0] === 'configure') {
@@ -525,7 +542,7 @@ http.createServer(async (req, res) => {
     if (partes[0] === 'manifest.json') return json(res, manifest());
 
     if (partes[0] === 'meta') {
-      const m = await meta(dec(partes[1]), dec(partes[2]), cfg);
+      const m = await meta(dec(partes[1]), dec(partes[2]), cfg, sistema);
       return m ? json(res, { meta: m }, 300) : json(res, { erro: 'sem metadados' }, 0, 404);
     }
 
