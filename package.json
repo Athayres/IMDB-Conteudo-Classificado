@@ -1,0 +1,8 @@
+{
+  "name": "stremio-guia-dos-pais",
+  "version": "1.0.0",
+  "description": "Addon Stremio: Guia dos Pais do IMDb em PT-BR com limites por categoria",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}
