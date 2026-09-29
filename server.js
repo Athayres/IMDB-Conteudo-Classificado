@@ -412,8 +412,7 @@ async function meta(tipo, id, cfg, sistema = 'Desconhecido') {
 
   // Exibe o texto do guia abaixo da sinopse SOMENTE no App. No Navegador (Web), mantém a sinopse limpa.
   if (sistema.startsWith('App')) {
-    const infoSistema = `💻 Sistema: ${sistema}`;
-    base.description = `${descBase}\n\n${texto}\n• ${infoSistema}`.trim();
+    base.description = `${descBase}\n\n${texto}`.trim();
   } else {
     base.description = descBase;
   }
@@ -425,7 +424,7 @@ async function meta(tipo, id, cfg, sistema = 'Desconhecido') {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.5.3',
+    version: '1.5.4',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia, classificação indicativa nos gêneros e bloqueia títulos.',
