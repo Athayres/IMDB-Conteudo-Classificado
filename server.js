@@ -1,9 +1,9 @@
 'use strict';
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
- *  - Catálogos (filmes/séries populares do TMDB em pt-BR) filtrados pelos SEUS limites
- *  - Ao abrir qualquer título, mostra uma "stream" informativa com o guia completo
- *    + classificação indicativa do Brasil (via TMDB) e veredito "dentro/acima do limite"
+ *  - Mostra o guia do IMDb e classificação indicativa do Brasil (via TMDB).
+ *  - Se a idade for "Sem limite", funciona apenas como aviso (não bloqueia nada).
+ *  - Se for definida uma idade (ex: 16), bloqueia títulos dessa idade para cima.
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave node server.js   →   http://localhost:7000/configure
@@ -14,7 +14,7 @@ const path = require('path');
 
 const PORT = process.env.PORT || 7000;
 const TMDB_KEY = process.env.TMDB_KEY || '';
-const DATA_DIR = process.env.DATA_DIR || __dirname; // aponte para um volume persistente ao hospedar
+const DATA_DIR = process.env.DATA_DIR || __dirname;
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { /* ignora */ }
 const CACHE_FILE = path.join(DATA_DIR, 'cache.json');
 const GUIA_TTL = 30 * 24 * 3600 * 1000; // 30 dias
@@ -22,7 +22,7 @@ const BLOQ = 'gpbloq:'; // prefixo de id para títulos bloqueados
 const LOGO = 'https://raw.githubusercontent.com/Athayres/IMDB-Conteudo-Classificado/refs/heads/main/logo_family.jpg';
 
 const NIVEIS = ['Nenhum', 'Leve', 'Moderado', 'Grave'];
-const COR = ['⬜', '🟩', '🟨', '🟥']; // Nenhum, Leve, Moderado, Grave
+const COR = ['⬜', '🟩', '🟨', '🟥'];
 const CATEGORIAS = [
   { key: 'sexo', rotulo: 'Sexo e nudez', icone: '🔞', ids: ['NUDITY'], texto: /nudity|sex/i },
   { key: 'violencia', rotulo: 'Violência e sangue', icone: '🩸', ids: ['VIOLENCE'], texto: /violence|gore/i },
@@ -31,10 +31,10 @@ const CATEGORIAS = [
   { key: 'susto', rotulo: 'Cenas intensas e assustadoras', icone: '😱', ids: ['FRIGHTENING'], texto: /frightening|intense/i },
 ];
 
-// Ajustado padrão para permitir por defeito para evitar bloqueio total caso o IMDb falhe ou não tenha votos
-const CFG_PADRAO = { max: { sexo: 3, violencia: 3, palavroes: 3, drogas: 3, susto: 3 }, semVotos: 'permitir', idade: 18 };
+// Padrão: Sem limite (18 = Apenas aviso, sem bloqueios)
+const CFG_PADRAO = { max: { sexo: 3, violencia: 3, palavroes: 3, drogas: 3, susto: 3 }, idade: 18 };
 
-// ───────────────────────── cache em disco ─────────────────────────
+// ───────────────────────── Cache em disco ─────────────────────────
 let cache = { guias: {}, ids: {}, br: {} };
 try { cache = Object.assign(cache, JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'))); } catch { /* primeiro uso */ }
 if (cache.v !== 2) { cache.guias = {}; cache.v = 2; }
@@ -44,7 +44,7 @@ function salvar() {
   salvarTimer = setTimeout(() => fs.writeFile(CACHE_FILE, JSON.stringify(cache), () => {}), 2000);
 }
 
-// ───────────────────────── utilidades ─────────────────────────
+// ───────────────────────── Utilidades ─────────────────────────
 function limitar(n) {
   let ativos = 0;
   const fila = [];
@@ -77,7 +77,6 @@ function lerConfig(b64) {
       const v = Number(j.max && j.max[c.key]);
       if (Number.isInteger(v) && v >= 0 && v <= 3) cfg.max[c.key] = v;
     }
-    cfg.semVotos = j.semVotos === 'bloquear' ? 'bloquear' : 'permitir';
     const idade = Number(j.idade);
     if ([0, 10, 12, 14, 16, 18].includes(idade)) cfg.idade = idade;
   } catch { /* usa padrão */ }
@@ -232,33 +231,39 @@ function idadeDeBR(br) {
   return Number.isFinite(n) ? n : null;
 }
 
+// ───────────────────────── Lógica de Avaliação ─────────────────────────
 function avaliar(guia, br, cfg) {
+  // Se a idade for 18 ("Sem limite"), funciona exclusivamente como AVISO (NUNCA bloqueia)
+  if (cfg.idade === 18) {
+    return { bloqueado: false, motivos: [] };
+  }
+
   const motivos = [];
-  if (guia === undefined) {
-    if (cfg.semVotos === 'bloquear') motivos.push('não foi possível verificar o Guia dos Pais agora');
-  } else if (guia === null) {
-    if (cfg.semVotos === 'bloquear') motivos.push('sem Guia dos Pais no IMDb (ninguém votou)');
-  } else {
+
+  // Bloqueio por Classificação Indicativa BR
+  const idade = idadeDeBR(br);
+  if (idade !== null && idade >= cfg.idade) {
+    const nomeIdade = idade === 0 ? 'Livre' : idade + ' anos';
+    motivos.push(`classificação indicativa ${nomeIdade} (seu limite: bloquear ${cfg.idade} anos ou mais)`);
+  }
+
+  // Bloqueio por Categorias do IMDb (apenas se houver votos gravados)
+  if (guia && typeof guia === 'object') {
     for (const c of CATEGORIAS) {
       const n = guia[c.key];
-      if (n == null) {
-        if (cfg.semVotos === 'bloquear' && cfg.max[c.key] < 3) motivos.push(`${c.rotulo}: sem votos`);
-      } else if (n > cfg.max[c.key]) {
+      if (n != null && n > cfg.max[c.key]) {
         motivos.push(`${c.rotulo}: ${NIVEIS[n]}`);
       }
     }
   }
-  const idade = idadeDeBR(br);
-  if (TMDB_KEY && idade !== null && cfg.idade < 18 && idade > cfg.idade) {
-    motivos.push(`classificação indicativa ${idade === 0 ? 'Livre' : idade + ' anos'} (seu limite: ${cfg.idade === 0 ? 'Livre' : 'até ' + cfg.idade + ' anos'})`);
-  }
+
   return { bloqueado: motivos.length > 0, motivos };
 }
 
 function textoGuia(guia, br) {
   let linhas;
-  if (guia === undefined) linhas = ['⚠ Não foi possível ler o Guia dos Pais do IMDb de momento'];
-  else if (guia === null) linhas = ['⚠ Este título não possui Guia dos Pais no IMDb (sem votos)'];
+  if (guia === undefined) linhas = ['ℹ️ Guia dos Pais do IMDb indisponível no momento'];
+  else if (guia === null) linhas = ['ℹ️ Este título não possui Guia dos Pais no IMDb (sem votos)'];
   else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]}${NIVEIS[guia[c.key]]}` : '❔ sem votos'}`);
   if (br) linhas.unshift(`🇧🇷 Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
   return linhas.join('\n');
@@ -266,8 +271,13 @@ function textoGuia(guia, br) {
 
 function blocoGuia(guia, br, cfg) {
   const av = avaliar(guia, br, cfg);
-  const topo = av.bloqueado ? '⛔ BLOQUEADO pelo Guia dos Pais\n' : '✅ Liberado pelo Guia dos Pais\n';
-  return { av, texto: `👪 GUIA DOS PAIS (IMDb)\n${topo}${textoGuia(guia, br)}` };
+  let topo = '✅ Liberado pelo Guia dos Pais\n';
+  if (av.bloqueado) {
+    topo = '⛔ BLOQUEADO pelo Guia dos Pais\n';
+  } else if (cfg.idade === 18) {
+    topo = 'ℹ️ GUIA DOS PAIS (Modo Informativo)\n';
+  }
+  return { av, texto: `👪 ${topo}${textoGuia(guia, br)}` };
 }
 
 // ───────────────────────── TMDB ─────────────────────────
@@ -330,8 +340,8 @@ async function streams(id, cfg) {
   const { av, texto } = blocoGuia(guia, br, cfg);
   const bloqueado = bloqueadoPeloId || av.bloqueado;
   return [{
-    name: bloqueado ? '⛔ Guia dos Pais' : '✅ Guia dos Pais',
-    description: texto + '\n(toque para ver detalhes no IMDb)',
+    name: bloqueado ? '⛔ Guia dos Pais' : 'ℹ️ Guia dos Pais',
+    description: texto + '\n\n(Toque para ver detalhes no IMDb)',
     externalUrl: url,
   }];
 }
@@ -363,10 +373,10 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.2.1',
+    version: '1.3.0',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
-    description: 'Controle parental com o Guia dos Pais do IMDb: mostra o guia abaixo do resumo e bloqueia os títulos acima dos seus limites.',
+    description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia e bloqueia títulos com base na idade selecionada.',
     resources: ['meta', 'stream'],
     types: ['movie', 'series'],
     idPrefixes: ['tt', BLOQ],
@@ -375,19 +385,15 @@ function manifest(configuravel = true) {
   };
 }
 
-// ───────────────────────── Configuração ─────────────────────────
+// ───────────────────────── Página de Configuração ─────────────────────────
 function paginaConfig(cfg) {
   const linhas = CATEGORIAS.map((c) => `
       <label>${c.icone} ${c.rotulo}
         <select data-cat="${c.key}">
-          ${NIVEIS.map((n, i) => `<option value="${i}">${i === 3 ? 'Sem limite (até Grave)' : 'Permitir até: ' + n}</option>`).join('')}
+          ${NIVEIS.map((n, i) => `<option value="${i}">${i === 3 ? 'Permitir até Grave' : 'Permitir até: ' + n}</option>`).join('')}
         </select>
       </label>`).join('');
-  const idades = [[0, 'Livre'], [10, 'Até 10 anos'], [12, 'Até 12 anos'], [14, 'Até 14 anos'], [16, 'Até 16 anos'], [18, 'Sem limite']];
-  const blocoIdade = TMDB_KEY ? `
-      <label>🇧🇷 Classificação indicativa máxima
-        <select id="idade">${idades.map(([v, r]) => `<option value="${v}">${r}</option>`).join('')}</select>
-      </label>` : '';
+
   return `<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Guia dos Pais (IMDb) – Configurar</title>
@@ -406,25 +412,32 @@ function paginaConfig(cfg) {
   small{opacity:.7}
 </style></head><body><main>
   <h1><img src="${LOGO}" alt="">Guia dos Pais (IMDb)</h1>
-  <p>Escolha o nível máximo aceito em cada categoria. O guia aparece abaixo do resumo do título e, se passar do limite, o título fica bloqueado.</p>
-  <div class="card">${linhas}${blocoIdade}
-    <label>Categoria sem votos / falha na consulta
-      <select id="semVotos"><option value="permitir">Permitir (recomendado)</option><option value="bloquear">Bloquear</option></select>
+  <p>Escolha o modo de funcionamento e os limites desejados.</p>
+  <div class="card">
+    <label>🇧🇷 Modos de Bloqueio por Idade
+      <select id="idade">
+        <option value="18">Sem limite (Apenas aviso, não bloqueia)</option>
+        <option value="16">Bloquear 16 anos ou mais (16 e 18 anos)</option>
+        <option value="14">Bloquear 14 anos ou mais (14, 16 e 18 anos)</option>
+        <option value="12">Bloquear 12 anos ou mais (12, 14, 16 e 18 anos)</option>
+        <option value="10">Bloquear 10 anos ou mais (10, 12, 14, 16 e 18 anos)</option>
+        <option value="0">Bloquear tudo exceto Livre</option>
+      </select>
     </label>
+    ${linhas}
     <a class="btn" id="instalar" href="#">Instalar no Stremio</a>
     <input id="url" readonly>
     <button class="sec" id="copiar" type="button">Copiar link do addon</button>
-    <small>Os níveis vêm de votos de usuários do IMDb (Nenhum, Leve, Moderado, Grave).</small>
+    <small>No modo "Sem limite", o addon apenas insere o resumo do Guia dos Pais sem impedir a reprodução de nada.</small>
   </div>
 </main>
 <script>
   var CFG = ${JSON.stringify(cfg)};
   var sels = document.querySelectorAll('select[data-cat]');
   sels.forEach(function(s){ s.value = CFG.max[s.dataset.cat]; s.onchange = atualizar; });
-  var sv = document.getElementById('semVotos'); sv.value = CFG.semVotos; sv.onchange = atualizar;
   var id = document.getElementById('idade'); if (id) { id.value = CFG.idade; id.onchange = atualizar; }
   function atualizar(){
-    var c = { max:{}, semVotos: sv.value, idade: id ? Number(id.value) : CFG.idade };
+    var c = { max:{}, idade: id ? Number(id.value) : CFG.idade };
     sels.forEach(function(s){ c.max[s.dataset.cat] = Number(s.value); });
     var b64 = btoa(JSON.stringify(c)).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
     var url = location.protocol + '//' + location.host + '/' + b64 + '/manifest.json';
@@ -492,5 +505,5 @@ http.createServer(async (req, res) => {
   }
 }).listen(PORT, () => {
   console.log(`Guia dos Pais (IMDb) a rodar em http://localhost:${PORT}/configure`);
-  if (!TMDB_KEY) console.log('⚠ Defina TMDB_KEY (opcional) para ter o resumo em português e a classificação indicativa do Brasil.');
+  if (!TMDB_KEY) console.log('⚠ Defina TMDB_KEY (opcional) para ter a classificação indicativa do Brasil.');
 });
