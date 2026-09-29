@@ -33,7 +33,7 @@ const CATEGORIAS = [
 ];
 
 // Padrão: Sem limite (18 = Apenas aviso, sem bloqueios)
-const CFG_PADRAO = { max: { sexo: 3, violencia: 3, palavroes: 3, drogas: 3, susto: 3 }, idade: 18 };
+const CFG_PADRAO = { max: { sexo: 3, violencia: 3, palavroes: 3, drogas: 3, susto: 3 }, idade: 18, painel: 'bloqueado' };
 
 // ───────────────────────── Cache em disco ─────────────────────────
 let cache = { guias: {}, ids: {}, br: {} };
@@ -80,6 +80,7 @@ function lerConfig(b64) {
     }
     const idade = Number(j.idade);
     if ([0, 10, 12, 14, 16, 18].includes(idade)) cfg.idade = idade;
+    cfg.painel = j.painel === 'sempre' ? 'sempre' : 'bloqueado';
   } catch { /* usa padrão */ }
   return cfg;
 }
@@ -263,19 +264,21 @@ function textoGuia(guia, br) {
   if (guia === undefined) linhas = ['ℹ️ Guia dos Pais do IMDb indisponível no momento'];
   else if (guia === null) linhas = ['ℹ️ Este título não possui Guia dos Pais no IMDb (sem votos)'];
   else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]}${NIVEIS[guia[c.key]]}` : '❔ sem votos'}`);
-  if (br) linhas.unshift(`Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
-  return linhas.join('\n');
+  if (br) linhas.unshift(`👪 Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
+
+  // Utiliza \n\n para o Markdown do Stremio Web interpretar como parágrafos separados
+  return linhas.map((l) => '• ' + l).join('\n\n');
 }
 
 function blocoGuia(guia, br, cfg, mostrarIdade = true) {
   const av = avaliar(guia, br, cfg);
-  let topo = '✅ Liberado pelo Guia dos Pais\n';
+  let topo = '✅ Liberado pelo Guia dos Pais\n\n';
   if (av.bloqueado) {
-    topo = '⛔ BLOQUEADO pelo Guia dos Pais\n';
+    topo = '⛔ BLOQUEADO pelo Guia dos Pais\n\n';
   } else if (cfg.idade === 18) {
-    topo = 'ℹ️ GUIA DOS PAIS (Modo Informativo)\n';
+    topo = 'ℹ️ GUIA DOS PAIS (Modo Informativo)\n\n';
   }
-  return { av, texto: `👪 ${topo}${textoGuia(guia, mostrarIdade ? br : null)}` };
+  return { av, texto: `${topo}${textoGuia(guia, mostrarIdade ? br : null)}` };
 }
 
 // ───────────────────────── TMDB ─────────────────────────
@@ -333,16 +336,17 @@ async function streams(id, cfg) {
   const bloqueadoPeloId = id.startsWith(BLOQ);
   const imdb = (bloqueadoPeloId ? id.slice(BLOQ.length) : id).split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return [];
-  // Modo informativo: nunca mostra nada junto aos vídeos (o guia fica só abaixo do resumo)
-  if (!bloqueadoPeloId && cfg.idade === 18) return [];
+  const sempre = cfg.painel === 'sempre';
+  // Padrão: nada junto aos vídeos, a menos que o título esteja bloqueado (ou o painel esteja em "sempre")
+  if (!bloqueadoPeloId && cfg.idade === 18 && !sempre) return [];
   const url = `https://www.imdb.com/title/${imdb}/parentalguide/`;
   const [guia, br] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb)]);
   const { av, texto } = blocoGuia(guia, br, cfg);
-  // Só aparece na lista de vídeos quando há motivo: título bloqueado
-  if (!bloqueadoPeloId && !av.bloqueado) return [];
+  const bloqueado = bloqueadoPeloId || av.bloqueado;
+  if (!bloqueado && !sempre) return [];
   return [{
-    name: '⛔ Guia dos Pais',
-    description: texto + '\n\n(Toque para ver detalhes no IMDb)',
+    name: bloqueado ? '⛔ Guia dos Pais' : '👪 Guia dos Pais',
+    description: texto.replace(/^• /gm, '') + '\n\n(Toque para ver detalhes no IMDb)',
     externalUrl: url,
   }];
 }
@@ -361,7 +365,6 @@ async function meta(tipo, id, cfg) {
   const [guia, br, resumo] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb), resumoPtBR(imdb)]);
 
   // Idade (ex.: "Idade: 16") como 1º item da linha de Gêneros: sem ícone, na mesma linha dos gêneros.
-  // O Stremio Web monta os gêneros a partir de "links"; clientes antigos leem "genres".
   if (br) {
     const idadeTag = `Idade: ${br === 'L' ? 'Livre' : br}`;
     base.genres = [idadeTag, ...(base.genres || [])];
@@ -374,7 +377,7 @@ async function meta(tipo, id, cfg) {
       }
     }
   }
-  // A idade também vai no bloco abaixo do resumo (clientes que não desenham os gêneros só mostram esse bloco)
+
   const { av, texto } = blocoGuia(guia, br, cfg);
 
   if (av.bloqueado) {
@@ -382,14 +385,13 @@ async function meta(tipo, id, cfg) {
     if (Array.isArray(base.videos)) base.videos = base.videos.map((v) => Object.assign({}, v, { id: BLOQ + v.id }));
   }
 
-  // Em séries, ao escolher um episódio o Stremio Web troca o resumo da série pelo "overview" do episódio:
-  // o guia também é acrescentado lá, senão ele some justamente na tela dos vídeos.
+  // Em séries, inclui no resumo dos episódios
   if (Array.isArray(base.videos)) {
-    base.videos = base.videos.map((v) => Object.assign({}, v, { overview: v.overview ? `${v.overview}\n\n${texto}` : texto }));
+    base.videos = base.videos.map((v) => Object.assign({}, v, { overview: v.overview ? `${v.overview}\n\n───────────────\n\n${texto}` : texto }));
   }
 
   const original = resumo || base.description || '';
-  base.description = original ? `${original}\n\n${texto}` : texto;
+  base.description = original ? `${original}\n\n───────────────\n\n${texto}` : texto;
   return base;
 }
 
@@ -397,7 +399,7 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.4.7',
+    version: '1.4.9',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia, classificação indicativa nos gêneros e bloqueia títulos.',
@@ -449,6 +451,12 @@ function paginaConfig(cfg) {
       </select>
     </label>
     ${linhas}
+    <label>📋 Painel do Guia na lista de vídeos
+      <select id="painel">
+        <option value="bloqueado">Só quando o título estiver bloqueado</option>
+        <option value="sempre">Sempre mostrar (texto em linhas separadas)</option>
+      </select>
+    </label>
     <a class="btn" id="instalar" href="#">Instalar no Stremio</a>
     <input id="url" readonly>
     <button class="sec" id="copiar" type="button">Copiar link do addon</button>
@@ -460,8 +468,9 @@ function paginaConfig(cfg) {
   var sels = document.querySelectorAll('select[data-cat]');
   sels.forEach(function(s){ s.value = CFG.max[s.dataset.cat]; s.onchange = atualizar; });
   var id = document.getElementById('idade'); if (id) { id.value = CFG.idade; id.onchange = atualizar; }
+  var pn = document.getElementById('painel'); pn.value = CFG.painel; pn.onchange = atualizar;
   function atualizar(){
-    var c = { max:{}, idade: id ? Number(id.value) : CFG.idade };
+    var c = { max:{}, idade: id ? Number(id.value) : CFG.idade, painel: pn.value };
     sels.forEach(function(s){ c.max[s.dataset.cat] = Number(s.value); });
     var b64 = btoa(JSON.stringify(c)).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
     var url = location.protocol + '//' + location.host + '/' + b64 + '/manifest.json';
