@@ -22,7 +22,7 @@ const BLOQ = 'gpbloq:'; // prefixo de id para títulos bloqueados
 const LOGO = 'https://raw.githubusercontent.com/Athayres/IMDB-Conteudo-Classificado/refs/heads/main/logo_family.jpg';
 
 const NIVEIS = ['Nenhum', 'Leve', 'Moderado', 'Grave'];
-const COR = ['⬜', '🟩', '🟨', '🟥']; // Nenhum, Leve, Moderado, Grave (todos quadrados cheios)
+const COR = ['⬜', '🟩', '🟨', '🟥']; // Nenhum, Leve, Moderado, Grave
 const CATEGORIAS = [
   { key: 'sexo', rotulo: 'Sexo e nudez', icone: '🔞', ids: ['NUDITY'], texto: /nudity|sex/i },
   { key: 'violencia', rotulo: 'Violência e sangue', icone: '🩸', ids: ['VIOLENCE'], texto: /violence|gore/i },
@@ -30,7 +30,9 @@ const CATEGORIAS = [
   { key: 'drogas', rotulo: 'Álcool, drogas e fumo', icone: '🍺', ids: ['ALCOHOL'], texto: /alcohol|drugs|smoking/i },
   { key: 'susto', rotulo: 'Cenas intensas e assustadoras', icone: '😱', ids: ['FRIGHTENING'], texto: /frightening|intense/i },
 ];
-const CFG_PADRAO = { max: { sexo: 1, violencia: 2, palavroes: 2, drogas: 2, susto: 2 }, semVotos: 'bloquear', idade: 14 };
+
+// Ajustado padrão para permitir por defeito para evitar bloqueio total caso o IMDb falhe ou não tenha votos
+const CFG_PADRAO = { max: { sexo: 3, violencia: 3, palavroes: 3, drogas: 3, susto: 3 }, semVotos: 'permitir', idade: 18 };
 
 // ───────────────────────── cache em disco ─────────────────────────
 let cache = { guias: {}, ids: {}, br: {} };
@@ -57,7 +59,7 @@ function limitar(n) {
 const naFilaIMDb = limitar(3);
 
 function nivelDe(v) {
-  switch (String(v || '').toUpperCase().replace(/VOTES$/, '')) { // aceita "mildVotes", "MILD", "Mild"
+  switch (String(v || '').toUpperCase().replace(/VOTES$/, '')) {
     case 'NONE': return 0;
     case 'MILD': return 1;
     case 'MODERATE': return 2;
@@ -75,7 +77,7 @@ function lerConfig(b64) {
       const v = Number(j.max && j.max[c.key]);
       if (Number.isInteger(v) && v >= 0 && v <= 3) cfg.max[c.key] = v;
     }
-    cfg.semVotos = j.semVotos === 'permitir' ? 'permitir' : 'bloquear';
+    cfg.semVotos = j.semVotos === 'bloquear' ? 'bloquear' : 'permitir';
     const idade = Number(j.idade);
     if ([0, 10, 12, 14, 16, 18].includes(idade)) cfg.idade = idade;
   } catch { /* usa padrão */ }
@@ -83,8 +85,8 @@ function lerConfig(b64) {
 }
 
 // ───────────────────────── IMDb: Guia dos Pais ─────────────────────────
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
-const NULO_TTL = 12 * 3600 * 1000; // "não achei guia" é lembrado só por 12h
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+const NULO_TTL = 12 * 3600 * 1000;
 
 async function baixarPaginaIMDb(imdbId) {
   try {
@@ -96,7 +98,7 @@ async function baixarPaginaIMDb(imdbId) {
   } catch (e) { return { status: 0, html: '', erro: String((e && e.message) || e) }; }
 }
 
-const GQL_QUERY = 'query($id: ID!){ title(id: $id){ parentsGuide{ categories{ category{ id text } severity{ id text votedFor } totalSeverityVotes } } } }';
+const GQL_QUERY = 'query($id: ID!){ title(id:$id){ parentsGuide{ categories{ category{ id text } severity{ id text votedFor } totalSeverityVotes } } } }';
 async function baixarGraphQL(imdbId) {
   try {
     const r = await fetch('https://api.graphql.imdb.com/', {
@@ -112,7 +114,6 @@ async function baixarGraphQL(imdbId) {
   } catch (e) { return { status: 0, json: null, texto: '', erro: String((e && e.message) || e) }; }
 }
 
-// Converte o "severity" de vários formatos possíveis em 0..3 (ou null se sem votos)
 function nivelDoItem(el) {
   const s = el.severity ?? el.severitySummary;
   if (s != null) {
@@ -141,7 +142,7 @@ function nivelDoItem(el) {
   if (!tem) return null;
   const total = votos.reduce((a, b) => a + b, 0);
   let acum = 0;
-  for (let i = 0; i < 4; i++) { acum += votos[i]; if (acum >= total / 2) return i; } // mediana dos votos
+  for (let i = 0; i < 4; i++) { acum += votos[i]; if (acum >= total / 2) return i; }
   return null;
 }
 
@@ -193,7 +194,6 @@ function extrairGuia(html) {
   return guiaDeHtml(html);
 }
 
-// Tenta GraphQL primeiro, depois a página. Devolve também um diagnóstico.
 async function consultarIMDb(imdbId) {
   const dbg = { imdbId };
   const gq = await baixarGraphQL(imdbId);
@@ -201,7 +201,6 @@ async function consultarIMDb(imdbId) {
   if (gq.json) {
     const g = guiaDeJson(gq.json);
     if (g) return { guia: g, dbg };
-    // O IMDb respondeu normalmente, mas ninguém votou: resposta definitiva (não é falha)
     if (gq.json.data && gq.json.data.title && !gq.json.errors) return { guia: null, dbg };
   }
   const p = await baixarPaginaIMDb(imdbId);
@@ -213,7 +212,6 @@ async function consultarIMDb(imdbId) {
     inicio: p.html.slice(0, 300),
   };
   const g = p.html ? extrairGuia(p.html) : null;
-  // falhou = não conseguimos nem ler a página (bloqueio/rede): não vale a pena gravar no cache
   return { guia: g, falhou: !g && p.status !== 200, dbg };
 }
 
@@ -221,7 +219,7 @@ async function buscarGuia(imdbId) {
   const c = cache.guias[imdbId];
   if (c && Date.now() - c.t < (c.g ? GUIA_TTL : NULO_TTL)) return c.g;
   const r = await consultarIMDb(imdbId);
-  if (r.falhou) return undefined; // falha de rede/bloqueio: não confundir com "sem votos"
+  if (r.falhou) return undefined;
   cache.guias[imdbId] = { t: Date.now(), g: r.guia };
   salvar();
   return r.guia;
@@ -234,7 +232,6 @@ function idadeDeBR(br) {
   return Number.isFinite(n) ? n : null;
 }
 
-// guia: objeto (níveis) | null (ninguém votou) | undefined (falha ao consultar o IMDb)
 function avaliar(guia, br, cfg) {
   const motivos = [];
   if (guia === undefined) {
@@ -260,9 +257,9 @@ function avaliar(guia, br, cfg) {
 
 function textoGuia(guia, br) {
   let linhas;
-  if (guia === undefined) linhas = ['⚠ Não consegui ler o Guia dos Pais do IMDb agora'];
-  else if (guia === null) linhas = ['⚠ Este título não tem Guia dos Pais no IMDb (sem votos)'];
-  else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]} ${NIVEIS[guia[c.key]]}` : '❔ sem votos'}`);
+  if (guia === undefined) linhas = ['⚠ Não foi possível ler o Guia dos Pais do IMDb de momento'];
+  else if (guia === null) linhas = ['⚠ Este título não possui Guia dos Pais no IMDb (sem votos)'];
+  else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]}${NIVEIS[guia[c.key]]}` : '❔ sem votos'}`);
   if (br) linhas.unshift(`🇧🇷 Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
   return linhas.join('\n');
 }
@@ -324,8 +321,6 @@ async function classificacaoBR(imdbId) {
 }
 
 // ───────────────────────── Streams ─────────────────────────
-// Ids "gpbloq:tt123[:t:e]" só existem para títulos bloqueados: como nenhum outro addon
-// responde a esse prefixo, a tela do título fica sem links para assistir.
 async function streams(id, cfg) {
   const bloqueadoPeloId = id.startsWith(BLOQ);
   const imdb = (bloqueadoPeloId ? id.slice(BLOQ.length) : id).split(':')[0];
@@ -341,7 +336,7 @@ async function streams(id, cfg) {
   }];
 }
 
-// ───────────────────────── Metadados (tela do título) ─────────────────────────
+// ───────────────────────── Metadados ─────────────────────────
 async function meta(tipo, id, cfg) {
   const imdb = id.split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return null;
@@ -350,13 +345,12 @@ async function meta(tipo, id, cfg) {
     const r = await fetch(`https://v3-cinemeta.strem.io/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
     if (r.ok) base = (await r.json()).meta || null;
   } catch { /* sem Cinemeta */ }
-  if (!base) return null; // o Stremio tenta o próximo addon de metadados
+  if (!base) return null;
 
   const [guia, br, resumo] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb), resumoPtBR(imdb)]);
   const { av, texto } = blocoGuia(guia, br, cfg);
 
   if (av.bloqueado) {
-    // Redireciona os pedidos de "assistir" para ids que nenhum outro addon atende
     if (tipo === 'movie') base.behaviorHints = Object.assign({}, base.behaviorHints, { defaultVideoId: BLOQ + imdb });
     if (Array.isArray(base.videos)) base.videos = base.videos.map((v) => Object.assign({}, v, { id: BLOQ + v.id }));
   }
@@ -369,10 +363,10 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.2.0',
+    version: '1.2.1',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
-    description: 'Controle parental com o Guia dos Pais do IMDb: mostra o guia abaixo do resumo e bloqueia os títulos acima dos seus limites, sem criar catálogos próprios.',
+    description: 'Controle parental com o Guia dos Pais do IMDb: mostra o guia abaixo do resumo e bloqueia os títulos acima dos seus limites.',
     resources: ['meta', 'stream'],
     types: ['movie', 'series'],
     idPrefixes: ['tt', BLOQ],
@@ -381,7 +375,7 @@ function manifest(configuravel = true) {
   };
 }
 
-// ───────────────────────── Página de configuração (PT-BR) ─────────────────────────
+// ───────────────────────── Configuração ─────────────────────────
 function paginaConfig(cfg) {
   const linhas = CATEGORIAS.map((c) => `
       <label>${c.icone} ${c.rotulo}
@@ -414,13 +408,13 @@ function paginaConfig(cfg) {
   <h1><img src="${LOGO}" alt="">Guia dos Pais (IMDb)</h1>
   <p>Escolha o nível máximo aceito em cada categoria. O guia aparece abaixo do resumo do título e, se passar do limite, o título fica bloqueado.</p>
   <div class="card">${linhas}${blocoIdade}
-    <label>Categoria sem votos no IMDb
-      <select id="semVotos"><option value="bloquear">Bloquear (recomendado)</option><option value="permitir">Permitir</option></select>
+    <label>Categoria sem votos / falha na consulta
+      <select id="semVotos"><option value="permitir">Permitir (recomendado)</option><option value="bloquear">Bloquear</option></select>
     </label>
     <a class="btn" id="instalar" href="#">Instalar no Stremio</a>
     <input id="url" readonly>
     <button class="sec" id="copiar" type="button">Copiar link do addon</button>
-    <small>Os níveis vêm de votos de usuários do IMDb (Nenhum, Leve, Moderado, Grave). Categoria sem votos não significa "sem conteúdo", por isso o padrão é bloquear.</small>
+    <small>Os níveis vêm de votos de usuários do IMDb (Nenhum, Leve, Moderado, Grave).</small>
   </div>
 </main>
 <script>
@@ -497,6 +491,6 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) rodando em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) a rodar em http://localhost:${PORT}/configure`);
   if (!TMDB_KEY) console.log('⚠ Defina TMDB_KEY (opcional) para ter o resumo em português e a classificação indicativa do Brasil.');
 });
