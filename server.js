@@ -248,6 +248,23 @@ async function tmdb(caminho, params = {}) {
   return r.json();
 }
 
+const findCache = new Map();
+async function acharTMDB(imdbId) {
+  if (findCache.has(imdbId)) return findCache.get(imdbId);
+  const f = await tmdb(`/find/${imdbId}`, { external_source: 'imdb_id' });
+  findCache.set(imdbId, f);
+  return f;
+}
+
+async function resumoPtBR(imdbId) {
+  if (!TMDB_KEY) return null;
+  try {
+    const f = await acharTMDB(imdbId);
+    const it = (f.movie_results || [])[0] || (f.tv_results || [])[0];
+    return it && it.overview ? it.overview : null;
+  } catch { return null; }
+}
+
 async function imdbDe(tipo, tmdbId) {
   const k = `${tipo}:${tmdbId}`;
   if (cache.ids[k] !== undefined) return cache.ids[k];
@@ -261,7 +278,7 @@ async function classificacaoBR(imdbId) {
   if (!TMDB_KEY) return null;
   if (cache.br[imdbId] !== undefined) return cache.br[imdbId];
   try {
-    const f = await tmdb(`/find/${imdbId}`, { external_source: 'imdb_id' });
+    const f = await acharTMDB(imdbId);
     let br = null;
     if (f.movie_results && f.movie_results[0]) {
       const d = await tmdb(`/movie/${f.movie_results[0].id}/release_dates`);
@@ -343,14 +360,38 @@ async function streams(id, cfg) {
   return [{ name: 'Guia dos Pais', description: veredito + textoGuia(guia, br) + '\n(toque para ver detalhes no IMDb)', externalUrl: url }];
 }
 
+// ───────────────────────── Metadados (tela do título) ─────────────────────────
+function vereditoDe(guia, cfg) {
+  if (!guia) return '';
+  const acima = CATEGORIAS.filter((c) => guia[c.key] != null && guia[c.key] > cfg.max[c.key]);
+  return acima.length ? `⛔ Acima do seu limite: ${acima.map((c) => c.rotulo).join(', ')}\n` : '✅ Dentro dos seus limites\n';
+}
+
+async function meta(tipo, id, cfg) {
+  const imdb = id.split(':')[0];
+  if (!/^tt\d+$/.test(imdb)) return null;
+  let base = null;
+  try {
+    const r = await fetch(`https://v3-cinemeta.strem.io/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
+    if (r.ok) base = (await r.json()).meta || null;
+  } catch { /* sem Cinemeta */ }
+  if (!base) return null; // o Stremio tenta o próximo addon de metadados
+
+  const [guia, br, resumo] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb), resumoPtBR(imdb)]);
+  const bloco = `👪 GUIA DOS PAIS (IMDb)\n${vereditoDe(guia, cfg)}${textoGuia(guia, br)}`;
+  const original = resumo || base.description || '';
+  base.description = original ? `${original}\n\n${bloco}` : bloco;
+  return base;
+}
+
 // ───────────────────────── Manifest ─────────────────────────
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.0.0',
+    version: '1.1.0',
     name: 'Guia dos Pais (IMDb)',
     description: 'Controle parental por categoria usando o Guia dos Pais do IMDb: filtra catálogos e mostra o guia completo (com a classificação indicativa do Brasil) em cada título.',
-    resources: ['catalog', 'stream'],
+    resources: ['catalog', 'meta', 'stream'],
     types: ['movie', 'series'],
     idPrefixes: ['tt'],
     catalogs: [
@@ -428,7 +469,7 @@ function json(res, obj, maxAge = 0, status = 200) {
   res.end(JSON.stringify(obj));
 }
 
-const RESERVADOS = new Set(['configure', 'manifest.json', 'catalog', 'stream', 'health', 'debug']);
+const RESERVADOS = new Set(['configure', 'manifest.json', 'catalog', 'stream', 'meta', 'health', 'debug']);
 
 http.createServer(async (req, res) => {
   try {
@@ -461,6 +502,11 @@ http.createServer(async (req, res) => {
       const busca = extra.get('search') || '';
       const metas = ['movie', 'series'].includes(tipo) ? await catalogo(tipo, cfg, skip, busca) : [];
       return json(res, { metas }, 600);
+    }
+
+    if (partes[0] === 'meta') {
+      const m = await meta(dec(partes[1]), dec(partes[2]), cfg);
+      return m ? json(res, { meta: m }, 3600) : json(res, { erro: 'sem metadados' }, 0, 404);
     }
 
     if (partes[0] === 'stream') {
