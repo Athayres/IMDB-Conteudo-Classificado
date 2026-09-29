@@ -262,19 +262,20 @@ function textoGuia(guia, br) {
   let linhas;
   if (guia === undefined) linhas = ['ℹ️ Guia dos Pais do IMDb indisponível no momento'];
   else if (guia === null) linhas = ['ℹ️ Este título não possui Guia dos Pais no IMDb (sem votos)'];
-  else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]}${NIVEIS[guia[c.key]]}` : '机制 sem votos'}`);
+  else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]}${NIVEIS[guia[c.key]]}` : '❔ sem votos'}`);
   if (br) linhas.unshift(`👪 Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
 
-  return linhas.map((l) => '• ' + l).join('\n\n');
+  // Utiliza \n simples para manter compatibilidade perfeita entre Linux/Desktop e Web
+  return linhas.map((l) => '• ' + l).join('\n');
 }
 
 function blocoGuia(guia, br, cfg, mostrarIdade = true) {
   const av = avaliar(guia, br, cfg);
-  let topo = '✅ Liberado pelo Guia dos Pais\n\n';
+  let topo = '✅ Liberado pelo Guia dos Pais\n';
   if (av.bloqueado) {
-    topo = '⛔ BLOQUEADO pelo Guia dos Pais\n\n';
+    topo = '⛔ BLOQUEADO pelo Guia dos Pais\n';
   } else if (cfg.idade === 18) {
-    topo = 'ℹ️ GUIA DOS PAIS (Modo Informativo)\n\n';
+    topo = 'ℹ️ GUIA DOS PAIS (Modo Informativo)\n';
   }
   return { av, texto: `${topo}${textoGuia(guia, mostrarIdade ? br : null)}` };
 }
@@ -380,11 +381,11 @@ async function meta(tipo, id, cfg) {
   }
 
   if (Array.isArray(base.videos)) {
-    base.videos = base.videos.map((v) => Object.assign({}, v, { overview: v.overview ? `${v.overview}\n\n───────────────\n\n${texto}` : texto }));
+    base.videos = base.videos.map((v) => Object.assign({}, v, { overview: v.overview ? `${v.overview}\n\n───────────────\n${texto}` : texto }));
   }
 
   const original = resumo || base.description || '';
-  base.description = original ? `${original}\n\n───────────────\n\n${texto}` : texto;
+  base.description = original ? `${original}\n\n───────────────\n${texto}` : texto;
   return base;
 }
 
