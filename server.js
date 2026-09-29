@@ -2,7 +2,7 @@
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
  *  - Mostra o guia do IMDb e classificação indicativa do Brasil (via TMDB).
- *  - Exibe a classificação indicativa como a primeira etiqueta antes dos gêneros.
+ *  - Mostra a classificação indicativa (só o número, sem ícone) como 1º item da linha de Gêneros ("Idade: 16").
  *  - Se a idade for "Sem limite", funciona apenas como aviso (não bloqueia nada).
  *  - Se for definida uma idade (ex: 16), bloqueia títulos dessa idade para cima (16 e 18 anos).
  *
@@ -263,11 +263,11 @@ function textoGuia(guia, br) {
   if (guia === undefined) linhas = ['ℹ️ Guia dos Pais do IMDb indisponível no momento'];
   else if (guia === null) linhas = ['ℹ️ Este título não possui Guia dos Pais no IMDb (sem votos)'];
   else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]}${NIVEIS[guia[c.key]]}` : '❔ sem votos'}`);
-  if (br) linhas.unshift(`🇧🇷 Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
+  if (br) linhas.unshift(`Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
   return linhas.join('\n');
 }
 
-function blocoGuia(guia, br, cfg) {
+function blocoGuia(guia, br, cfg, mostrarIdade = true) {
   const av = avaliar(guia, br, cfg);
   let topo = '✅ Liberado pelo Guia dos Pais\n';
   if (av.bloqueado) {
@@ -275,7 +275,7 @@ function blocoGuia(guia, br, cfg) {
   } else if (cfg.idade === 18) {
     topo = 'ℹ️ GUIA DOS PAIS (Modo Informativo)\n';
   }
-  return { av, texto: `👪 ${topo}${textoGuia(guia, br)}` };
+  return { av, texto: `👪 ${topo}${textoGuia(guia, mostrarIdade ? br : null)}` };
 }
 
 // ───────────────────────── TMDB ─────────────────────────
@@ -359,24 +359,29 @@ async function meta(tipo, id, cfg) {
   if (!base) return null;
 
   const [guia, br, resumo] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb), resumoPtBR(imdb)]);
-  const { av, texto } = blocoGuia(guia, br, cfg);
+
+  // Idade (ex.: "Idade: 16") como 1º item da linha de Gêneros: sem ícone, na mesma linha dos gêneros.
+  // O Stremio Web monta os gêneros a partir de "links"; clientes antigos leem "genres".
+  let idadeNoGenero = false;
+  if (br) {
+    const idadeTag = `Idade: ${br === 'L' ? 'Livre' : br}`;
+    base.genres = [idadeTag, ...(base.genres || [])];
+    if (Array.isArray(base.links)) {
+      const links = base.links.slice();
+      const i = links.findIndex((l) => l && l.category === 'Genres');
+      if (i >= 0) {
+        links.splice(i, 0, { name: idadeTag, category: 'Genres', url: `https://www.imdb.com/title/${imdb}/parentalguide/` });
+        base.links = links;
+        idadeNoGenero = true;
+      }
+    }
+  }
+  // Se não deu para entrar nos gêneros, a idade fica no bloco abaixo do resumo
+  const { av, texto } = blocoGuia(guia, br, cfg, !idadeNoGenero);
 
   if (av.bloqueado) {
     if (tipo === 'movie') base.behaviorHints = Object.assign({}, base.behaviorHints, { defaultVideoId: BLOQ + imdb });
     if (Array.isArray(base.videos)) base.videos = base.videos.map((v) => Object.assign({}, v, { id: BLOQ + v.id }));
-  }
-
-  // 🔞 Classificação indicativa: linha própria logo depois da nota do IMDb e antes dos gêneros.
-  // No Stremio Web a tela é: [duração • ano • nota IMDb] → grupos de links (na ordem em que aparecem
-  // em "links") → resumo. Por isso o grupo da idade entra antes do primeiro link de "Genres".
-  if (br) {
-    const tagIdade = `🔞 ${br === 'L' ? 'Livre' : br + ' anos'}`;
-    base.genres = [tagIdade, ...(base.genres || [])]; // clientes antigos que leem "genres"
-    const links = Array.isArray(base.links) ? base.links.slice() : [];
-    let pos = links.findIndex((l) => l && l.category === 'Genres');
-    if (pos < 0) pos = links.findIndex((l) => l && l.category === 'imdb') + 1; // 0 se não houver
-    links.splice(pos, 0, { name: tagIdade, category: 'Classificação indicativa', url: `https://www.imdb.com/title/${imdb}/parentalguide/` });
-    base.links = links;
   }
 
   const original = resumo || base.description || '';
@@ -388,7 +393,7 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.4.2',
+    version: '1.4.6',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia, classificação indicativa nos gêneros e bloqueia títulos.',
