@@ -366,19 +366,17 @@ async function meta(tipo, id, cfg) {
     if (Array.isArray(base.videos)) base.videos = base.videos.map((v) => Object.assign({}, v, { id: BLOQ + v.id }));
   }
 
-  // 🔞 Classificação indicativa como 1ª etiqueta: depois da nota do IMDb e antes dos gêneros.
-  // O Stremio novo monta os gêneros a partir de "links"; os antigos, de "genres": mexe nos dois.
+  // 🔞 Classificação indicativa: linha própria logo depois da nota do IMDb e antes dos gêneros.
+  // No Stremio Web a tela é: [duração • ano • nota IMDb] → grupos de links (na ordem em que aparecem
+  // em "links") → resumo. Por isso o grupo da idade entra antes do primeiro link de "Genres".
   if (br) {
     const tagIdade = `🔞 ${br === 'L' ? 'Livre' : br + ' anos'}`;
-    base.genres = [tagIdade, ...(base.genres || [])];
-    if (Array.isArray(base.links)) {
-      const links = base.links.slice();
-      const i = links.findIndex((l) => l && l.category === 'Genres');
-      if (i >= 0) {
-        links.splice(i, 0, { name: tagIdade, category: 'Genres', url: `https://www.imdb.com/title/${imdb}/parentalguide/` });
-        base.links = links;
-      }
-    }
+    base.genres = [tagIdade, ...(base.genres || [])]; // clientes antigos que leem "genres"
+    const links = Array.isArray(base.links) ? base.links.slice() : [];
+    let pos = links.findIndex((l) => l && l.category === 'Genres');
+    if (pos < 0) pos = links.findIndex((l) => l && l.category === 'imdb') + 1; // 0 se não houver
+    links.splice(pos, 0, { name: tagIdade, category: 'Classificação indicativa', url: `https://www.imdb.com/title/${imdb}/parentalguide/` });
+    base.links = links;
   }
 
   const original = resumo || base.description || '';
@@ -390,7 +388,7 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.4.1',
+    version: '1.4.2',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia, classificação indicativa nos gêneros e bloqueia títulos.',
