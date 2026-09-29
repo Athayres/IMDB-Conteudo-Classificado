@@ -2,8 +2,9 @@
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
  *  - Mostra o guia do IMDb e classificação indicativa do Brasil (via TMDB).
+ *  - Exibe a classificação indicativa como a primeira etiqueta antes dos gêneros.
  *  - Se a idade for "Sem limite", funciona apenas como aviso (não bloqueia nada).
- *  - Se for definida uma idade (ex: 16), bloqueia títulos dessa idade para cima.
+ *  - Se for definida uma idade (ex: 16), bloqueia títulos dessa idade para cima (16 e 18 anos).
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave node server.js   →   http://localhost:7000/configure
@@ -233,21 +234,18 @@ function idadeDeBR(br) {
 
 // ───────────────────────── Lógica de Avaliação ─────────────────────────
 function avaliar(guia, br, cfg) {
-  // Se a idade for 18 ("Sem limite"), funciona exclusivamente como AVISO (NUNCA bloqueia)
   if (cfg.idade === 18) {
     return { bloqueado: false, motivos: [] };
   }
 
   const motivos = [];
 
-  // Bloqueio por Classificação Indicativa BR
   const idade = idadeDeBR(br);
   if (idade !== null && idade >= cfg.idade) {
     const nomeIdade = idade === 0 ? 'Livre' : idade + ' anos';
     motivos.push(`classificação indicativa ${nomeIdade} (seu limite: bloquear ${cfg.idade} anos ou mais)`);
   }
 
-  // Bloqueio por Categorias do IMDb (apenas se houver votos gravados)
   if (guia && typeof guia === 'object') {
     for (const c of CATEGORIAS) {
       const n = guia[c.key];
@@ -364,6 +362,13 @@ async function meta(tipo, id, cfg) {
     if (tipo === 'movie') base.behaviorHints = Object.assign({}, base.behaviorHints, { defaultVideoId: BLOQ + imdb });
     if (Array.isArray(base.videos)) base.videos = base.videos.map((v) => Object.assign({}, v, { id: BLOQ + v.id }));
   }
+
+  // 🔞 Adiciona a Classificação Indicativa como o 1º gênero (aparece antes de todos na interface)
+  if (br) {
+    const tagIdade = `🔞 ${br === 'L' ? 'Livre' : br + ' anos'}`;
+    base.genres = [tagIdade, ...(base.genres || [])];
+  }
+
   const original = resumo || base.description || '';
   base.description = original ? `${original}\n\n${texto}` : texto;
   return base;
@@ -373,10 +378,10 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.3.0',
+    version: '1.4.0',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
-    description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia e bloqueia títulos com base na idade selecionada.',
+    description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia, classificação indicativa nos gêneros e bloqueia títulos.',
     resources: ['meta', 'stream'],
     types: ['movie', 'series'],
     idPrefixes: ['tt', BLOQ],
