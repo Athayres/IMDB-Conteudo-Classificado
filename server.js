@@ -29,7 +29,7 @@ const CATEGORIAS = [
   { key: 'violencia', rotulo: 'Violência e sangue', icone: '🩸', ids: ['VIOLENCE'], texto: /violence|gore/i },
   { key: 'palavroes', rotulo: 'Palavrões', icone: '🤬', ids: ['PROFANITY'], texto: /profanity/i },
   { key: 'drogas', rotulo: 'Álcool, drogas e fumo', icone: '🍺', ids: ['ALCOHOL'], texto: /alcohol|drugs|smoking/i },
-  { key: 'susto', rotulo: 'Cenas intensas e assustadoras', icone: '😱', ids: ['FRIGHTENING'], texto: /frightening|intense/i },
+  { key: 'susto', rotulo: 'Cenas intensas / assustadoras', icone: '😱', ids: ['FRIGHTENING'], texto: /frightening|intense/i },
 ];
 
 // Padrão: Sem limite (18 = Apenas aviso, sem bloqueios)
@@ -259,25 +259,39 @@ function avaliar(guia, br, cfg) {
 }
 
 function textoGuia(guia, br) {
-  let linhas;
-  if (guia === undefined) linhas = ['ℹ️ Guia dos Pais do IMDb indisponível no momento'];
-  else if (guia === null) linhas = ['ℹ️ Este título não possui Guia dos Pais no IMDb (sem votos)'];
-  else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]}${NIVEIS[guia[c.key]]}` : '❔ sem votos'}`);
-  if (br) linhas.unshift(`👪 Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
+  let linhas = [];
+  if (br) {
+    linhas.push(`👪 Classificação Indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
+  }
 
-  // Utiliza \n simples para manter compatibilidade perfeita entre Linux/Desktop e Web
-  return linhas.map((l) => '• ' + l).join('\n');
+  if (guia === undefined) {
+    linhas.push('ℹ️ Guia dos Pais do IMDb indisponível no momento');
+  } else if (guia === null) {
+    linhas.push('ℹ️ Este título não possui Guia dos Pais no IMDb (sem votos)');
+  } else {
+    CATEGORIAS.forEach((c) => {
+      const n = guia[c.key];
+      const status = n != null ? `${COR[n]} ${NIVEIS[n]}` : '❔ sem votos';
+      linhas.push(`${c.icone} ${c.rotulo}: ${status}`);
+    });
+  }
+
+  return linhas.join('\n');
 }
 
 function blocoGuia(guia, br, cfg, mostrarIdade = true) {
   const av = avaliar(guia, br, cfg);
-  let topo = '✅ Liberado pelo Guia dos Pais\n';
+  let cabecalho = '✅ PAINEL GUIA DOS PAIS (LIBERADO)';
   if (av.bloqueado) {
-    topo = '⛔ BLOQUEADO pelo Guia dos Pais\n';
+    cabecalho = '⛔ PAINEL GUIA DOS PAIS (BLOQUEADO)';
   } else if (cfg.idade === 18) {
-    topo = 'ℹ️ GUIA DOS PAIS (Modo Informativo)\n';
+    cabecalho = 'ℹ️ PAINEL GUIA DOS PAIS (INFORMATIVO)';
   }
-  return { av, texto: `${topo}${textoGuia(guia, mostrarIdade ? br : null)}` };
+
+  const conteudo = textoGuia(guia, mostrarIdade ? br : null);
+  const painel = `─────── ${cabecalho} ───────\n${conteudo}\n─────────────────────────────────────────`;
+
+  return { av, texto: painel };
 }
 
 // ───────────────────────── TMDB ─────────────────────────
@@ -343,7 +357,7 @@ async function streams(id, cfg) {
   if (!bloqueado) return [];
   return [{
     name: '⛔ Guia dos Pais',
-    description: texto.replace(/^• /gm, '') + '\n\n(Toque para ver detalhes no IMDb)',
+    description: texto + '\n\n(Toque para ver detalhes no IMDb)',
     externalUrl: url,
   }];
 }
@@ -381,11 +395,11 @@ async function meta(tipo, id, cfg) {
   }
 
   if (Array.isArray(base.videos)) {
-    base.videos = base.videos.map((v) => Object.assign({}, v, { overview: v.overview ? `${v.overview}\n\n───────────────\n${texto}` : texto }));
+    base.videos = base.videos.map((v) => Object.assign({}, v, { overview: v.overview ? `${v.overview}\n\n${texto}` : texto }));
   }
 
   const original = resumo || base.description || '';
-  base.description = original ? `${original}\n\n───────────────\n${texto}` : texto;
+  base.description = original ? `${original}\n\n${texto}` : texto;
   return base;
 }
 
@@ -393,7 +407,7 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.4.9',
+    version: '1.5.0',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia, classificação indicativa nos gêneros e bloqueia títulos.',
