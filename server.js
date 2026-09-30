@@ -1,9 +1,9 @@
 'use strict';
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
- *  - Exibe a classificação indicativa do Brasil e o guia do IMDb na descrição.
- *  - Sem cabeçalhos de bloqueio na descrição principal.
- *  - 0 mensagens ou cards na aba de episódios/vídeos (streams sempre vazios).
+ *  - Exibe a classificação indicativa brasileira e o guia do IMDb na descrição.
+ *  - Tags com formato limpo (ex: 👨‍👩‍👧‍👦 16 anos).
+ *  - 0 mensagens ou cards na aba de episódios/vídeos.
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave [MDBLIST_KEY=sua_chave] node server.js   →   http://localhost:7000/configure
@@ -84,7 +84,7 @@ function lerConfig(b64) {
 
 function limpaDescricao(desc) {
   if (!desc) return '';
-  return desc.split(/(?:CONTEÚDO BLOQUEADO|LIBERADO|GUIA DOS PAIS|• Classificação|• 🔞|• 🩸|• 🤬|• 🍺|• 😱)/i)[0].trim();
+  return desc.split(/(?:CONTEÚDO BLOQUEADO|LIBERADO|GUIA DOS PAIS|• Classificação|• 👨‍👩‍👧‍‍👦|• 🔞|• 🩸|• 🤬|• 🍺|• 😱)/i)[0].trim();
 }
 
 // ───────────────────────── IMDb: Guia dos Pais ─────────────────────────
@@ -384,7 +384,7 @@ async function meta(tipo, id) {
 
   const novasTags = [];
   if (br) {
-    novasTags.push(`🔞 Idade: ${br === 'L' ? 'Livre' : `${br} anos`}`);
+    novasTags.push(`👨‍👩‍👧‍👦 ${br === 'L' ? 'Livre' : `${br} anos`}`);
   }
   if (guia && typeof guia === 'object') {
     for (const c of CATEGORIAS) {
@@ -416,7 +416,7 @@ async function meta(tipo, id) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.0.0',
+    version: '2.0.1',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -561,7 +561,6 @@ http.createServer(async (req, res) => {
       return json(res, { meta: m }, 300);
     }
 
-    // Retorna SEMPRE uma lista vazia de streams para zerar mensagens na aba de vídeos
     if (partes[0] === 'stream') {
       return json(res, { streams: [] }, 0);
     }
@@ -572,5 +571,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.0.0 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.0.1 a rodar em http://localhost:${PORT}/configure`);
 });
