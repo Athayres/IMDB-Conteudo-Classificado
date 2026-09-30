@@ -2,8 +2,8 @@
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
  *  - Exibe a classificação indicativa do Brasil e o guia do IMDb.
- *  - Sem cabeçalhos de bloqueio na descrição principal.
- *  - Sem nenhuma mensagem na aba de vídeos quando sem limites.
+ *  - No modo sem limites, o recurso de stream é desativado do manifesto,
+ *    garantindo 0 mensagens ou cards na lista de vídeos do Stremio.
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave [MDBLIST_KEY=sua_chave] node server.js   →   http://localhost:7000/configure
@@ -238,7 +238,10 @@ function idadeDeBR(br) {
 
 // ───────────────────────── Lógica de Avaliação ─────────────────────────
 function limitesAtivos(cfg) {
-  return cfg.idade < 18 || CATEGORIAS.some((c) => cfg.max[c.key] < 3);
+  if (!cfg) return false;
+  const idadeAtiva = Number(cfg.idade) < 18;
+  const catAtiva = CATEGORIAS.some((c) => Number(cfg.max && cfg.max[c.key]) < 3);
+  return idadeAtiva || catAtiva;
 }
 
 function avaliar(guia, br, cfg) {
@@ -408,7 +411,6 @@ async function classificacaoBR(imdbId, tipo) {
 
 // ───────────────────────── Streams ─────────────────────────
 async function streams(id, cfg, tipo) {
-  // Se não há limites configurados, não envia absolutamente NADA para a aba de vídeos
   if (!limitesAtivos(cfg)) return [];
 
   const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
@@ -486,14 +488,19 @@ async function meta(tipo, id, cfg) {
 }
 
 // ───────────────────────── Manifest ─────────────────────────
-function manifest(configuravel = true) {
+function manifest(cfg = CFG_PADRAO, configuravel = true) {
+  const resources = ['meta'];
+  if (limitesAtivos(cfg)) {
+    resources.push('stream');
+  }
+
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.7.3',
+    version: '1.7.4',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
-    resources: ['meta', 'stream'],
+    resources,
     types: ['movie', 'series'],
     idPrefixes: ['tt', 'gpbloq:'],
     catalogs: [],
@@ -642,7 +649,7 @@ http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       return res.end(paginaConfig(cfg));
     }
-    if (partes[0] === 'manifest.json') return json(res, manifest());
+    if (partes[0] === 'manifest.json') return json(res, manifest(cfg));
 
     if (partes[0] === 'config.json') return json(res, { limitesAtivos: limitesAtivos(cfg), config: cfg });
     if (partes[0] === 'avaliar') {
