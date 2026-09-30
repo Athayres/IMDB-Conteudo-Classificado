@@ -456,21 +456,19 @@ async function meta(tipo, id, cfg) {
     })));
   }
 
-  // Bloqueio: troca os IDs dos vídeos por "gpbloq:..." — os outros addons de stream
-  // só respondem a "tt...", então nenhuma fonte de vídeo aparece.
-  // (NÃO usar behaviorHints.defaultVideoId: ele faz o Stremio pular a tela do título.)
+  // Bloqueio: troca os IDs por "gpbloq:..." — os outros addons de stream só respondem
+  // a "tt...", então nenhuma fonte de vídeo aparece.
+  // Séries: IDs dos episódios. Filmes: ID do próprio título (sem criar item de vídeo).
   if (bloqueado) {
     if (Array.isArray(base.videos) && base.videos.length) {
       base.videos = base.videos.map((v) => (v && v.id && !String(v.id).startsWith('gpbloq:') ? { ...v, id: `gpbloq:${v.id}` } : v));
     } else if (tipo === 'movie') {
-      // filmes não têm lista de vídeos: cria um único vídeo com ID bloqueado
-      base.videos = [{ id: `gpbloq:${imdb}`, title: base.name || imdb, released: base.released || '1970-01-01T00:00:00.000Z' }];
+      base.id = `gpbloq:${imdb}`;
     }
   }
 
-  const texto = textoGuia(guia, br);
-  const original = limpaDescricao(resumo || base.description || '');
-  base.description = original ? `${original}\n\n${texto}` : texto;
+  // Sinopse limpa: nada de texto extra abaixo (classificação e guia ficam nas tags)
+  base.description = limpaDescricao(resumo || base.description || '');
 
   return { meta: base, bloqueado, motivos, incompleto: guia === undefined };
 }
@@ -626,6 +624,13 @@ http.createServer(async (req, res) => {
       return json(res, { meta: r.meta }, r.incompleto ? 0 : 300);
     }
 
+    if (partes[0] === 'avaliar') { // diagnóstico: /<config>/avaliar/movie/tt1234567
+      const imdb = dec(partes[2]).replace(/^gpbloq:/, '').split(':')[0];
+      if (!/^tt\d+$/.test(imdb)) return json(res, { erro: 'use /avaliar/movie/tt1234567' }, 0, 400);
+      const r = await avaliar(imdb, dec(partes[1]), cfg);
+      return json(res, { imdb, config: cfg, classificacaoBR: r.br, guia: r.guia, bloqueado: r.motivos.length > 0, motivos: r.motivos }, 0);
+    }
+
     if (partes[0] === 'stream') {
       const tipo = dec(partes[1]);
       const imdb = dec(partes[2]).replace(/^gpbloq:/, '').split(':')[0];
@@ -635,7 +640,7 @@ http.createServer(async (req, res) => {
       return json(res, {
         streams: [{
           name: '🔒 BLOQUEADO',
-          description: motivos.join('\n'),
+          description: motivos[0].replace(/\s*\(.*\)\s*$/, ''), // só o motivo principal, curto
           externalUrl: `https://www.imdb.com/title/${imdb}/parentalguide/`,
         }],
       }, 0);
