@@ -2,8 +2,8 @@
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
  *  - Exibe a classificação indicativa brasileira e o guia do IMDb na descrição.
+ *  - Aplica bloqueio/aviso se o conteúdo exceder a idade ou níveis configurados.
  *  - Tags com formato limpo (ex: 👨‍👩‍👧‍👦 16 anos).
- *  - 0 mensagens ou cards na aba de episódios/vídeos.
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave [MDBLIST_KEY=sua_chave] node server.js   →   http://localhost:7000/configure
@@ -31,7 +31,7 @@ const CATEGORIAS = [
   { key: 'susto', rotulo: 'Cenas intensas e assustadoras', icone: '😱', ids: ['FRIGHTENING'], texto: /frightening|intense/i },
 ];
 
-const CFG_PADRAO = { max: { sexo: 0, violencia: 1, palavroes: 0, drogas: 1, susto: 1 }, idade: 18 };
+const CFG_PADRAO = { max: { sexo: 3, violencia: 3, palavroes: 3, drogas: 3, susto: 3 }, idade: 18 };
 
 // ───────────────────────── Cache em disco ─────────────────────────
 let cache = { guias: {}, ids: {}, br: {}, mdb: {} };
@@ -362,7 +362,7 @@ async function classificacaoBR(imdbId, tipo) {
 }
 
 // ───────────────────────── Metadados ─────────────────────────
-async function meta(tipo, id) {
+async function meta(tipo, id, cfg) {
   const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return null;
 
@@ -381,6 +381,27 @@ async function meta(tipo, id) {
     classificacaoBR(imdb, tipo).catch(() => null),
     resumoPtBR(imdb).catch(() => null),
   ]);
+
+  // Checar Bloqueios
+  let bloqueado = false;
+  let motivoBloqueio = '';
+
+  const idadeNum = br === 'L' ? 0 : parseInt(br, 10);
+  if (cfg.idade < 18 && !isNaN(idadeNum) && idadeNum > cfg.idade) {
+    bloqueado = true;
+    motivoBloqueio = `Classificação indicativa (${br === 'L' ? 'Livre' : br + ' anos'}) acima do limite configurado (${cfg.idade} anos).`;
+  }
+
+  if (!bloqueado && guia && typeof guia === 'object') {
+    for (const c of CATEGORIAS) {
+      const n = guia[c.key];
+      if (n != null && n > cfg.max[c.key]) {
+        bloqueado = true;
+        motivoBloqueio = `${c.rotulo} (${NIVEIS[n]}) acima do limite configurado (${NIVEIS[cfg.max[c.key]]}).`;
+        break;
+      }
+    }
+  }
 
   const novasTags = [];
   if (br) {
@@ -406,8 +427,14 @@ async function meta(tipo, id) {
   }
 
   const texto = textoGuia(guia, br);
-  const original = limpaDescricao(resumo || base.description || '');
-  base.description = original ? `${original}\n\n${texto}` : texto;
+
+  if (bloqueado) {
+    base.name = `🔒 [BLOQUEADO] ${base.name}`;
+    base.description = `⚠️ CONTEÚDO BLOQUEADO PELO GUIA DOS PAIS\n\nMotivo: ${motivoBloqueio}\n\n${texto}`;
+  } else {
+    const original = limpaDescricao(resumo || base.description || '');
+    base.description = original ? `${original}\n\n${texto}` : texto;
+  }
 
   return base;
 }
@@ -557,7 +584,7 @@ http.createServer(async (req, res) => {
     if (partes[0] === 'manifest.json') return json(res, manifest());
 
     if (partes[0] === 'meta') {
-      const m = await meta(dec(partes[1]), dec(partes[2]));
+      const m = await meta(dec(partes[1]), dec(partes[2]), cfg);
       return json(res, { meta: m }, 300);
     }
 
@@ -571,5 +598,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.0.1 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.0.1 rodando em http://localhost:${PORT}/configure`);
 });
