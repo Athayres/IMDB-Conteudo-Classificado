@@ -1,9 +1,8 @@
 'use strict';
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
- *  - Exibe a classificação indicativa brasileira e o guia do IMDb na descrição.
- *  - Tags com formato limpo (ex: 👨‍👩‍👧‍👦 16 anos).
- *  - 0 mensagens ou cards na aba de episódios/vídeos.
+ *  - Exibe a classificação e o guia na descrição para Aplicativos nativos.
+ *  - Exibe em Tags para o Navegador Web.
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave [MDBLIST_KEY=sua_chave] node server.js   →   http://localhost:7000/configure
@@ -85,7 +84,7 @@ function lerConfig(b64) {
 
 function limpaDescricao(desc) {
   if (!desc) return '';
-  return desc.split(/(?:CONTEÚDO BLOQUEADO|LIBERADO|GUIA DOS PAIS|• Classificação|• 👨‍👩‍👧‍‍👦|• 🔞|• 🩸|• 🤬|• 🍺|• 😱)/i)[0].trim();
+  return desc.split(/(?:CONTEÚDO BLOQUEADO|LIBERADO|GUIA DOS PAIS|• Classificação|• 👨‍👩‍👧👦|• 🔞|• 🩸|• 🤬|• 🍺|• 😱)/i)[0].trim();
 }
 
 // ───────────────────────── IMDb: Guia dos Pais ─────────────────────────
@@ -362,7 +361,6 @@ async function classificacaoBR(imdbId, tipo) {
   return classificacaoMDBList(imdbId, tipo);
 }
 
-
 // ───────────────────────── Decisão de bloqueio ─────────────────────────
 function idadeDeBR(br) {
   if (br == null) return null;
@@ -372,28 +370,24 @@ function idadeDeBR(br) {
   return Number.isFinite(n) ? n : null;
 }
 
-// Retorna a lista de motivos do bloqueio ([] = liberado)
 function motivosBloqueio(cfg, br, guia) {
   const motivos = [];
-  let liberadoPorIdade = false;
-
-  // 18 = "Sem limite": não aplica nenhum bloqueio.
   if (cfg.idade === 18) return motivos;
 
-  // Filtro por idade
+  let liberadoPorIdade = false;
+
   if (cfg.idade < 18) {
-    const limite = cfg.idade === 0 ? 1 : cfg.idade; // 0 = só libera "Livre"
+    const limite = cfg.idade === 0 ? 1 : cfg.idade;
     const idade = idadeDeBR(br);
     if (idade === null) {
       if (BLOQUEAR_SEM_INFO) motivos.push('Sem classificação indicativa conhecida');
     } else if (idade < limite) {
-      liberadoPorIdade = true; // classificação dentro do permitido: título liberado
+      liberadoPorIdade = true;
     } else {
       motivos.push(`Classificação ${idade === 0 ? 'Livre' : idade + ' anos'} (bloqueado a partir de ${cfg.idade === 0 ? 'qualquer faixa acima de Livre' : cfg.idade + ' anos'})`);
     }
   }
 
-  // Filtro por categoria do Guia dos Pais
   const restrito = !liberadoPorIdade && CATEGORIAS.some((c) => cfg.max[c.key] < 3);
   if (restrito) {
     if (guia && typeof guia === 'object') {
@@ -419,7 +413,7 @@ async function avaliar(imdb, tipo, cfg) {
 }
 
 // ───────────────────────── Metadados ─────────────────────────
-async function meta(tipo, id, cfg) {
+async function meta(tipo, id, cfg, userAgent = '') {
   const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return null;
 
@@ -439,32 +433,44 @@ async function meta(tipo, id, cfg) {
   ]);
   const bloqueado = motivos.length > 0;
 
-  const novasTags = [];
-  if (br) {
-    novasTags.push(`👨‍👩‍👧‍👦 ${br === 'L' ? 'Livre' : `${br} anos`}`);
-  }
-  if (guia && typeof guia === 'object') {
-    for (const c of CATEGORIAS) {
-      const n = guia[c.key];
-      if (n != null) {
-        novasTags.push(`${c.icone} ${c.rotulo}: ${NIVEIS[n]}`);
+  // Identifica se a requisição veio do Aplicativo Nativo (Android, TV, Desktop)
+  const isApp = /stremio/i.test(userAgent);
+
+  const original = limpaDescricao(resumo || base.description || '');
+
+  if (isApp) {
+    // APLICATIVO NATIVO: As informações do Guia vão diretamente para a DESCRIÇÃO (Texto)
+    const texto = textoGuia(guia, br);
+    base.description = original ? `${texto}\n\n${original}` : texto;
+  } else {
+    // NAVEGADOR WEB: A descrição fica limpa e as informações vão em TAGS (links)
+    base.description = original;
+
+    const novasTags = [];
+    if (br) {
+      novasTags.push(`👨‍👩‍👧‍👦 ${br === 'L' ? 'Livre' : `${br} anos`}`);
+    }
+    if (guia && typeof guia === 'object') {
+      for (const c of CATEGORIAS) {
+        const n = guia[c.key];
+        if (n != null) {
+          novasTags.push(`${c.icone} ${c.rotulo}: ${NIVEIS[n]}`);
+        }
       }
+    }
+
+    if (novasTags.length > 0) {
+      base.links = Array.isArray(base.links) ? base.links : [];
+      base.links = base.links.filter((l) => !(l && l.category === 'Classificação'));
+      base.links.push(...novasTags.map((tag) => ({
+        name: tag,
+        category: 'Classificação',
+        url: `https://www.imdb.com/title/${imdb}/parentalguide/`,
+      })));
     }
   }
 
-  if (novasTags.length > 0) {
-    base.links = Array.isArray(base.links) ? base.links : [];
-    base.links = base.links.filter((l) => !(l && l.category === 'Classificação'));
-    base.links.push(...novasTags.map((tag) => ({
-      name: tag,
-      category: 'Classificação',
-      url: `https://www.imdb.com/title/${imdb}/parentalguide/`,
-    })));
-  }
-
-  // Bloqueio: troca os IDs por "gpbloq:..." — os outros addons de stream só respondem
-  // a "tt...", então nenhuma fonte de vídeo aparece.
-  // Séries: IDs dos episódios. Filmes: ID do próprio título (sem criar item de vídeo).
+  // Bloqueio de stream
   if (bloqueado) {
     if (Array.isArray(base.videos) && base.videos.length) {
       base.videos = base.videos.map((v) => (v && v.id && !String(v.id).startsWith('gpbloq:') ? { ...v, id: `gpbloq:${v.id}` } : v));
@@ -472,11 +478,6 @@ async function meta(tipo, id, cfg) {
       base.id = `gpbloq:${imdb}`;
     }
   }
-
-  // Mantem somente a sinopse no texto exibido no navegador.
-  // A classificação e o Guia dos Pais continuam sendo usados para avaliação.
-  const original = limpaDescricao(resumo || base.description || '');
-  base.description = original;
 
   return { meta: base, bloqueado, motivos, incompleto: guia === undefined };
 }
@@ -618,6 +619,7 @@ http.createServer(async (req, res) => {
     const cfgB64 = RESERVADOS.has(partes[0]) ? '' : partes.shift();
     const cfg = lerConfig(cfgB64);
     const dec = (s) => decodeURIComponent((s || '').replace(/\.json$/, ''));
+    const userAgent = req.headers['user-agent'] || '';
 
     if (partes[0] === 'configure') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -626,13 +628,12 @@ http.createServer(async (req, res) => {
     if (partes[0] === 'manifest.json') return json(res, manifest());
 
     if (partes[0] === 'meta') {
-      const r = await meta(dec(partes[1]), dec(partes[2]), cfg);
+      const r = await meta(dec(partes[1]), dec(partes[2]), cfg, userAgent);
       if (!r) return json(res, { meta: null }, 0);
-      // não deixa o cliente guardar respostas incompletas (ex.: IMDb fora do ar)
       return json(res, { meta: r.meta }, r.incompleto ? 0 : 300);
     }
 
-    if (partes[0] === 'avaliar') { // diagnóstico: /<config>/avaliar/movie/tt1234567
+    if (partes[0] === 'avaliar') {
       const imdb = dec(partes[2]).replace(/^gpbloq:/, '').split(':')[0];
       if (!/^tt\d+$/.test(imdb)) return json(res, { erro: 'use /avaliar/movie/tt1234567' }, 0, 400);
       const r = await avaliar(imdb, dec(partes[1]), cfg);
@@ -648,7 +649,7 @@ http.createServer(async (req, res) => {
       return json(res, {
         streams: [{
           name: '🔒 BLOQUEADO',
-          description: motivos[0].replace(/\s*\(.*\)\s*$/, ''), // só o motivo principal, curto
+          description: motivos[0].replace(/\s*\(.*\)\s*$/, ''),
           externalUrl: `https://www.imdb.com/title/${imdb}/parentalguide/`,
         }],
       }, 0);
