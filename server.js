@@ -2,8 +2,9 @@
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
  *  - Meta (Tela Principal): Resumo + Guia (App) ou Tags (Web).
- *  - Stream (Tela de Vídeo): Bloqueio ou Fallback inteligente se a tela principal falhar por posição.
+ *  - Stream (Tela de Vídeo): Bloqueio ou Fallback inteligente baseado em bandeira consumível.
  *
+ * Versão: 2.1.3
  * Requer Node 18+. Sem dependências.
  */
 const http = require('http');
@@ -32,8 +33,8 @@ const CATEGORIAS = [
 const BLOQUEAR_SEM_INFO = process.env.BLOQUEAR_SEM_CLASSIFICACAO === '1';
 const CFG_PADRAO = { max: { sexo: 0, violencia: 1, palavroes: 0, drogas: 1, susto: 1 }, idade: 18 };
 
-// Memória temporária para saber se o /meta (tela principal) foi chamado recentemente para o filme
-const ultimoMetaExecutado = new Map();
+// Bandeira consumible para rastrear se o /meta (tela principal) rodou com sucesso no topo
+const metaExecutadoNoTopo = new Set();
 
 // ───────────────────────── Cache em disco ─────────────────────────
 let cache = { guias: {}, ids: {}, br: {}, mdb: {} };
@@ -419,8 +420,9 @@ async function meta(tipo, id, cfg, userAgent = '') {
   const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return null;
 
-  // Marca na memória que a tela principal (meta) foi acionada para este filme
-  ultimoMetaExecutado.set(imdb, Date.now());
+  // Sinaliza que a tela principal (meta) foi executada com sucesso
+  metaExecutadoNoTopo.add(imdb);
+  setTimeout(() => metaExecutadoNoTopo.delete(imdb), 45000); // Limpeza automática de segurança
 
   let base = null;
   try {
@@ -484,7 +486,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.1.2',
+    version: '2.1.3',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -655,14 +657,12 @@ http.createServer(async (req, res) => {
         });
       }
 
-      // 2. FALLBACK INTELIGENTE E ORGANIZADO:
-      // Verifica se a tela principal (meta) foi executada recentemente para este filme.
-      // Se NÃO foi executada (porque o addon está numa posição inferior e foi silenciado pelo Stremio),
-      // nós criamos o card informativo na tela de vídeo (stream) com os textos bem arrumados linha por linha.
-      const tempoUltimoMeta = ultimoMetaExecutado.get(imdb) || 0;
-      const metaFoiNoTopo = (Date.now() - tempoUltimoMeta) < 30000; // 30 segundos
-
-      if (!metaFoiNoTopo) {
+      // 2. FALLBACK INTELIGENTE (Bandeira Consumível):
+      // Verifica se o /meta rodou no topo. Se sim, consumimos a bandeira e omitimos o card na tela de vídeo.
+      if (metaExecutadoNoTopo.has(imdb)) {
+        metaExecutadoNoTopo.delete(imdb); // Consome a bandeira definitivamente
+      } else {
+        // Se a bandeira não existe (addon embaixo e meta silenciado), exibe o Guia organizado na tela de vídeo
         const linhasGuia = [];
         if (br) linhasGuia.push(`Classificação: ${br === 'L' ? 'Livre' : br + ' anos'}`);
         if (guia && typeof guia === 'object') {
@@ -673,7 +673,6 @@ http.createServer(async (req, res) => {
         }
 
         if (linhasGuia.length > 0) {
-          // Usamos quebra de linha (\n) para que cada informação fique perfeitamente arrumada, sem embolar
           streams.push({
             name: '👨‍👩‍👧‍‍👦 Guia dos Pais (IMDb)',
             description: linhasGuia.join('\n'),
@@ -691,5 +690,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.1.2 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.1.3 a rodar em http://localhost:${PORT}/configure`);
 });
