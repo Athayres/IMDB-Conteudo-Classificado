@@ -375,9 +375,14 @@ function idadeDeBR(br) {
 // Retorna a lista de motivos do bloqueio ([] = liberado)
 function motivosBloqueio(cfg, br, guia) {
   const motivos = [];
+
+  // 18 = "Sem limite": não aplica nenhum bloqueio.
+  // A classificação e o Guia dos Pais continuam sendo exibidos em meta.
+  if (cfg.idade === 18) return motivos;
+
   let liberadoPorIdade = false;
 
-  // Filtro por idade (18 = "Sem limite")
+  // Filtro por idade
   if (cfg.idade < 18) {
     const limite = cfg.idade === 0 ? 1 : cfg.idade; // 0 = só libera "Livre"
     const idade = idadeDeBR(br);
