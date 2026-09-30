@@ -14,6 +14,9 @@ const path = require('path');
 const PORT = process.env.PORT || 7000;
 const TMDB_KEY = process.env.TMDB_KEY || '';
 const MDBLIST_KEY = process.env.MDBLIST_KEY || '';
+// Opcional: URL de instalação do addon de metadados (ex.: AIOMetadata) sem o "/manifest.json".
+// Se definida, a base do meta vem de lá; se falhar ou estiver vazia, usa o Cinemeta como antes.
+const META_URL = (process.env.META_URL || '').replace(/\/+$/, '');
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { /* ignora */ }
 const CACHE_FILE = path.join(DATA_DIR, 'cache.json');
@@ -84,7 +87,7 @@ function lerConfig(b64) {
 
 function limpaDescricao(desc) {
   if (!desc) return '';
-  return desc.split(/(?:CONTEÚDO BLOQUEADO|LIBERADO|GUIA DOS PAIS|• Classificação|• 👨‍👩‍‍👧👦|• 🔞|• 🩸|• 🤬|• 🍺|• 😱)/i)[0].trim();
+  return desc.split(/(?:CONTEÚDO BLOQUEADO|LIBERADO|GUIA DOS PAIS|• Classificação|• 👨‍👩‍‍👧👦|• 🔞|• 🩸|• 🤬|• 🍺|• 😱)/)[0].trim();
 }
 
 // ───────────────────────── IMDb: Guia dos Pais ─────────────────────────
@@ -418,10 +421,13 @@ async function meta(tipo, id, cfg, userAgent = '') {
   if (!/^tt\d+$/.test(imdb)) return null;
 
   let base = null;
-  try {
-    const r = await fetch(`https://v3-cinemeta.strem.io/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
-    if (r.ok) base = (await r.json()).meta || null;
-  } catch { /* sem Cinemeta */ }
+  for (const fonte of [META_URL, 'https://v3-cinemeta.strem.io'].filter(Boolean)) {
+    try {
+      const r = await fetch(`${fonte}/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
+      if (r.ok) base = (await r.json()).meta || null;
+    } catch { /* tenta a próxima fonte */ }
+    if (base) break;
+  }
 
   if (!base) {
     base = { id: imdb, type: tipo, name: imdb, description: '' };
