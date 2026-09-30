@@ -4,7 +4,7 @@
  *  - Meta (Tela Principal): Resumo + Guia (App) ou Tags (Web).
  *  - Stream (Tela de Vídeo): Apenas bloqueio de conteúdo baseado nas regras.
  *
- * Versão: 2.1.4
+ * Versão: 2.1.4 (Modificada com preservação de idade nos gêneros)
  * Requer Node 18+. Sem dependências.
  */
 const http = require('http');
@@ -87,7 +87,7 @@ function lerConfig(b64) {
 
 function limpaDescricao(desc) {
   if (!desc) return '';
-  return desc.split(/(?:CONTEÚDO BLOQUEADO|LIBERADO|GUIA DOS PAIS|• Classificação|• 👨‍👩‍‍👧👦|• 🔞|• 🩸|• 🤬|• 🍺|• 😱)/)[0].trim();
+  return desc.split(/(?:CONTEÚDO BLOQUEADO|LIBERADO|GUIA DOS PAIS|• Classificação|• 👨‍👩‍👧👦|• 🔞|• 🩸|• 🤬|• 🍺|• 😱)/)[0].trim();
 }
 
 // ───────────────────────── IMDb: Guia dos Pais ─────────────────────────
@@ -420,24 +420,34 @@ async function meta(tipo, id, cfg, userAgent = '') {
   const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return null;
 
-  let base = null;
-  for (const fonte of [META_URL, 'https://v3-cinemeta.strem.io'].filter(Boolean)) {
-    try {
-      const r = await fetch(`${fonte}/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
-      if (r.ok) base = (await r.json()).meta || null;
-    } catch { /* tenta a próxima fonte */ }
-    if (base) break;
-  }
+  const buscarBase = async () => {
+    for (const fonte of [META_URL, 'https://v3-cinemeta.strem.io'].filter(Boolean)) {
+      try {
+        const r = await fetch(`${fonte}/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
+        if (r.ok) { const m = (await r.json()).meta; if (m) return m; }
+      } catch { /* tenta a próxima fonte */ }
+    }
+    return null;
+  };
 
-  if (!base) {
-    base = { id: imdb, type: tipo, name: imdb, description: '' };
-  }
-
-  const [{ guia, br, motivos }, resumo] = await Promise.all([
+  // base, guia/classificação e resumo em paralelo: o tempo total é o do mais lento, não a soma
+  const [baseMeta, { guia, br, motivos }, resumo] = await Promise.all([
+    buscarBase(),
     avaliar(imdb, tipo, cfg),
     resumoPtBR(imdb).catch(() => null),
   ]);
+  const base = baseMeta || { id: imdb, type: tipo, name: imdb, description: '', genres: [] };
   const bloqueado = motivos.length > 0;
+
+  // 🛡️ GARANTE QUE A IDADE NÃO SEJA APAGADA E FIQUE NOS GÊNEROS
+  base.genres = Array.isArray(base.genres) ? base.genres : [];
+  if (br) {
+    const rotuloBr = br === 'L' ? 'Livre' : `${br} anos`;
+    // Remove versões anteriores para evitar duplicatas nos gêneros
+    base.genres = base.genres.filter(g => !/^(L|Livre|\d+\s*anos?)$/i.test(g));
+    // Insere a idade no topo dos gêneros para destacar igual ao TMDB
+    base.genres.unshift(rotuloBr);
+  }
 
   const isApp = /stremio/i.test(userAgent);
   const original = limpaDescricao(resumo || base.description || '');
