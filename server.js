@@ -5,7 +5,6 @@
  *  - Insere Idade, Sexo, Violência, Palavrões, Drogas e Susto como etiquetas nos Gêneros.
  *  - Compatível com Stremio App e Stremio Web.
  *  - Sem nenhum limite escolhido, funciona apenas como aviso na descrição (não bloqueia nem exibe nada na lista de vídeos).
- *  - Idade (ex: 16) bloqueia essa classificação para cima; limites por categoria valem também sem idade.
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave [MDBLIST_KEY=sua_chave] node server.js   →   http://localhost:7000/configure
@@ -34,7 +33,7 @@ const CATEGORIAS = [
   { key: 'susto', rotulo: 'Cenas intensas e assustadoras', icone: '😱', ids: ['FRIGHTENING'], texto: /frightening|intense/i },
 ];
 
-// Padrão: Sem limites (Permitir tudo)
+// Padrão: Sem limites (Permitir tudo / Apenas Informativo)
 const CFG_PADRAO = { max: { sexo: 3, violencia: 3, palavroes: 3, drogas: 3, susto: 3 }, idade: 18 };
 
 // ───────────────────────── Cache em disco ─────────────────────────
@@ -240,6 +239,11 @@ function limitesAtivos(cfg) {
 }
 
 function avaliar(guia, br, cfg) {
+  // Se não há nenhum limite ativado (modo totalmente informativo), NUNCA bloqueia
+  if (!limitesAtivos(cfg)) {
+    return { bloqueado: false, motivos: [] };
+  }
+
   const motivos = [];
 
   if (cfg.idade < 18) {
@@ -402,9 +406,9 @@ async function streams(id, cfg, tipo) {
 
   const [guia, br] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb, tipo)]);
   const { av, texto } = blocoGuia(guia, br, cfg);
-  const bloqueado = bloqueadoPeloId || av.bloqueado;
 
-  if (!bloqueado) return [];
+  // CORREÇÃO CRÍTICA: Se av.bloqueado for false na configuração atual, NUNCA bloqueia
+  if (!av.bloqueado) return [];
 
   const url = `https://www.imdb.com/title/${imdb}/parentalguide/`;
   return [{
@@ -427,7 +431,7 @@ async function meta(tipo, id, cfg) {
 
   const [guia, br, resumo] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb, tipo), resumoPtBR(imdb)]);
 
-  // --- GERAR TODAS AS TAGS DO GUIA DOS PAIS NOS GÊNEROS ---
+  // --- GERAR TAGS DO GUIA DOS PAIS NOS GÊNEROS ---
   const novasTags = [];
 
   if (br) {
@@ -445,13 +449,11 @@ async function meta(tipo, id, cfg) {
   }
 
   if (novasTags.length > 0) {
-    // 1. Limpa tags do Guia anteriores para evitar duplicações
     const generosLimpos = (base.genres || []).filter((g) => 
       !g.includes('Idade:') && !CATEGORIAS.some((c) => g.includes(c.rotulo))
     );
     base.genres = [...novasTags, ...generosLimpos];
 
-    // 2. Atualiza os links interativos na interface do Stremio
     if (Array.isArray(base.links)) {
       const linksLimpos = base.links.filter((l) => 
         !(l && l.name && (l.name.includes('Idade:') || CATEGORIAS.some((c) => l.name.includes(c.rotulo))))
@@ -493,7 +495,7 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.6.2',
+    version: '1.6.3',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia, classificação indicativa nos gêneros e bloqueia títulos.',
@@ -532,11 +534,13 @@ function paginaConfig(cfg) {
   a.btn{font:inherit;font-weight:700;border:0;border-radius:10px;padding:12px;background:var(--ac);color:#fff;text-align:center;text-decoration:none;cursor:pointer}
   a.btn-web{background:var(--sec)}
   button.sec{font:inherit;font-weight:600;background:transparent;color:var(--fg);border:1px solid var(--bd);border-radius:10px;padding:10px;cursor:pointer}
+  button.reset{font:inherit;font-weight:600;background:#22c55e;color:#fff;border:0;border-radius:10px;padding:10px;cursor:pointer}
   small{opacity:.75;line-height:1.4}
 </style></head><body><main>
   <h1><img src="${LOGO}" alt="">Guia dos Pais (IMDb)</h1>
   <p>Escolha o modo de funcionamento e os limites desejados.</p>
   <div class="card">
+    <button class="reset" id="btnLiberarTudo" type="button">🔓 Liberar Tudo (Apenas Informativo)</button>
     <label>🇧🇷 Modos de Bloqueio por Idade
       <select id="idade">
         <option value="18">Sem limite (Apenas aviso na descrição, não bloqueia)</option>
@@ -554,7 +558,7 @@ function paginaConfig(cfg) {
     </div>
     <input id="url" readonly>
     <button class="sec" id="copiar" type="button">Copiar link do addon</button>
-    <small>Sem nenhum limite escolhido, o addon exibe as informações apenas na descrição do título, sem bloquear nem exibir cards na área de reprodução.</small>
+    <small>No modo Informativo (Sem limites), as informações são exibidas apenas na descrição e nas tags de gênero do título, sem nenhum bloqueio de reprodução.</small>
   </div>
 </main>
 <script>
@@ -563,6 +567,12 @@ function paginaConfig(cfg) {
   sels.forEach(function(s){ s.value = CFG.max[s.dataset.cat]; s.onchange = atualizar; });
   var id = document.getElementById('idade'); if (id) { id.value = CFG.idade; id.onchange = atualizar; }
   
+  document.getElementById('btnLiberarTudo').onclick = function() {
+    if (id) id.value = '18';
+    sels.forEach(function(s){ s.value = '3'; });
+    atualizar();
+  };
+
   function atualizar(){
     var c = { max:{}, idade: id ? Number(id.value) : CFG.idade };
     sels.forEach(function(s){ c.max[s.dataset.cat] = Number(s.value); });
