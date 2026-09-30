@@ -4,7 +4,7 @@
  *  - Meta (Tela Principal): Resumo + Guia (App) ou Tags (Web).
  *  - Stream (Tela de Vídeo): Apenas bloqueio de conteúdo baseado nas regras.
  *
- * Versão: 2.1.4 (Modificada com preservação de idade nos gêneros)
+ * Versão: 2.1.5 (Com Fallback de Certificação e Preservação de Géneros)
  * Requer Node 18+. Sem dependências.
  */
 const http = require('http');
@@ -15,7 +15,6 @@ const PORT = process.env.PORT || 7000;
 const TMDB_KEY = process.env.TMDB_KEY || '';
 const MDBLIST_KEY = process.env.MDBLIST_KEY || '';
 // Opcional: URL de instalação do addon de metadados (ex.: AIOMetadata) sem o "/manifest.json".
-// Se definida, a base do meta vem de lá; se falhar ou estiver vazia, usa o Cinemeta como antes.
 const META_URL = (process.env.META_URL || '').replace(/\/+$/, '');
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { /* ignora */ }
@@ -430,22 +429,32 @@ async function meta(tipo, id, cfg, userAgent = '') {
     return null;
   };
 
-  // base, guia/classificação e resumo em paralelo: o tempo total é o do mais lento, não a soma
+  // base, guia/classificação e resumo em paralelo
   const [baseMeta, { guia, br, motivos }, resumo] = await Promise.all([
     buscarBase(),
     avaliar(imdb, tipo, cfg),
     resumoPtBR(imdb).catch(() => null),
   ]);
+  
   const base = baseMeta || { id: imdb, type: tipo, name: imdb, description: '', genres: [] };
   const bloqueado = motivos.length > 0;
 
+  // 🛡️ FALLBACK: Usa a classificação do TMDB/MDBList ('br'), ou recorre à certificação da base se existir
+  let classificacaoFinal = br;
+  if (!classificacaoFinal && base.certification) {
+    classificacaoFinal = base.certification;
+  }
+
   // 🛡️ GARANTE QUE A IDADE NÃO SEJA APAGADA E FIQUE NOS GÊNEROS
   base.genres = Array.isArray(base.genres) ? base.genres : [];
-  if (br) {
-    const rotuloBr = br === 'L' ? 'Livre' : `${br} anos`;
-    // Remove versões anteriores para evitar duplicatas nos gêneros
+  if (classificacaoFinal) {
+    const rotuloBr = /^(l|livre)$/i.test(classificacaoFinal) 
+      ? 'Livre' 
+      : (/^\d+$/.test(String(classificacaoFinal).trim()) ? `${classificacaoFinal} anos` : classificacaoFinal);
+
+    // Remove versões anteriores de idade/classificação para evitar duplicatas nos géneros
     base.genres = base.genres.filter(g => !/^(L|Livre|\d+\s*anos?)$/i.test(g));
-    // Insere a idade no topo dos gêneros para destacar igual ao TMDB
+    // Insere a idade no topo dos géneros
     base.genres.unshift(rotuloBr);
   }
 
@@ -453,7 +462,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
   const original = limpaDescricao(resumo || base.description || '');
 
   if (isApp) {
-    const textoGuiaPais = textoGuia(guia, br);
+    const textoGuiaPais = textoGuia(guia, classificacaoFinal);
     if (original && textoGuiaPais) {
       base.description = `${original}\n\n${textoGuiaPais}`;
     } else {
@@ -462,7 +471,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
   } else {
     base.description = original;
     const novasTags = [];
-    if (br) novasTags.push(`👨‍👩‍👧‍👦 ${br === 'L' ? 'Livre' : `${br} anos`}`);
+    if (classificacaoFinal) novasTags.push(`👨‍👩‍👧‍👦 ${/^(l|livre)$/i.test(classificacaoFinal) ? 'Livre' : `${classificacaoFinal} anos`}`);
     if (guia && typeof guia === 'object') {
       for (const c of CATEGORIAS) {
         const n = guia[c.key];
@@ -495,7 +504,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.1.4',
+    version: '2.1.5',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -645,7 +654,7 @@ http.createServer(async (req, res) => {
     if (partes[0] === 'avaliar') {
       const imdb = dec(partes[2]).replace(/^gpbloq:/, '').split(':')[0];
       if (!/^tt\d+$/.test(imdb)) return json(res, { erro: 'use /avaliar/movie/tt1234567' }, 0, 400);
-      const r = await avaliar(imdb, dec(partes[1]), cfg);
+      const r = avaliar(imdb, dec(partes[1]), cfg);
       return json(res, { imdb, config: cfg, classificacaoBR: r.br, guia: r.guia, bloqueado: r.motivos.length > 0, motivos: r.motivos }, 0);
     }
 
@@ -657,8 +666,7 @@ http.createServer(async (req, res) => {
       const { motivos } = await avaliar(imdb, tipo, cfg);
       const streams = [];
 
-      // A rota de stream agora foca puramente no bloqueio binário estabelecido pelas regras
-      if (motivos.length > 0) {
+      if (motivos.length >0) {
         streams.push({
           name: '🔒 BLOQUEADO',
           description: motivos[0].replace(/\s*\(.*\)\s*$/, ''),
@@ -675,5 +683,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.1.4 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.1.5 a rodar em http://localhost:${PORT}/configure`);
 });
