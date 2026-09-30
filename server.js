@@ -2,8 +2,8 @@
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
  *  - Exibe a classificação indicativa do Brasil e o guia do IMDb.
- *  - Sem mensagens de bloqueio na aba de vídeos quando estiver sem limites.
- *  - Proteções reforçadas contra falhas de rede.
+ *  - Sem cabeçalhos de bloqueio na descrição principal.
+ *  - Sem nenhuma mensagem na aba de vídeos quando sem limites.
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave [MDBLIST_KEY=sua_chave] node server.js   →   http://localhost:7000/configure
@@ -85,7 +85,7 @@ function lerConfig(b64) {
 
 function limpaDescricao(desc) {
   if (!desc) return '';
-  return desc.split(/(?:CONTEÚDO BLOQUEADO|LIBERADO|GUIA DOS PAIS)/i)[0].trim();
+  return desc.split(/(?:CONTEÚDO BLOQUEADO|LIBERADO|GUIA DOS PAIS|• Classificação)/i)[0].trim();
 }
 
 // ───────────────────────── IMDb: Guia dos Pais ─────────────────────────
@@ -290,18 +290,7 @@ function textoGuia(guia, br) {
 }
 
 function blocoGuia(guia, br, cfg) {
-  const av = avaliar(guia, br, cfg);
-  let topo = '';
-
-  if (av.bloqueado) {
-    topo = 'CONTEÚDO BLOQUEADO PELO GUIA DOS PAIS\n\n';
-  } else if (limitesAtivos(cfg)) {
-    topo = 'LIBERADO PELO GUIA DOS PAIS\n\n';
-  } else {
-    topo = 'GUIA DOS PAIS\n\n';
-  }
-
-  return { av, texto: `${topo}${textoGuia(guia, br)}` };
+  return { av: avaliar(guia, br, cfg), texto: textoGuia(guia, br) };
 }
 
 // ───────────────────────── TMDB ─────────────────────────
@@ -419,6 +408,7 @@ async function classificacaoBR(imdbId, tipo) {
 
 // ───────────────────────── Streams ─────────────────────────
 async function streams(id, cfg, tipo) {
+  // Se não há limites configurados, não envia absolutamente NADA para a aba de vídeos
   if (!limitesAtivos(cfg)) return [];
 
   const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
@@ -459,7 +449,6 @@ async function meta(tipo, id, cfg) {
     base = { id: imdb, type: tipo, name: imdb, description: '' };
   }
 
-  // Falhas externas não travam a exibição dos metadados no Stremio
   const [guia, br, resumo] = await Promise.all([
     naFilaIMDb(() => buscarGuia(imdb)).catch(() => undefined),
     classificacaoBR(imdb, tipo).catch(() => null),
@@ -500,7 +489,7 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.7.2',
+    version: '1.7.3',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
