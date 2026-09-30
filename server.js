@@ -375,6 +375,7 @@ function idadeDeBR(br) {
 // Retorna a lista de motivos do bloqueio ([] = liberado)
 function motivosBloqueio(cfg, br, guia) {
   const motivos = [];
+  let liberadoPorIdade = false;
 
   // Filtro por idade (18 = "Sem limite")
   if (cfg.idade < 18) {
@@ -382,13 +383,15 @@ function motivosBloqueio(cfg, br, guia) {
     const idade = idadeDeBR(br);
     if (idade === null) {
       if (BLOQUEAR_SEM_INFO) motivos.push('Sem classificação indicativa conhecida');
-    } else if (idade >= limite) {
+    } else if (idade < limite) {
+      liberadoPorIdade = true; // classificação dentro do permitido: título liberado
+    } else {
       motivos.push(`Classificação ${idade === 0 ? 'Livre' : idade + ' anos'} (bloqueado a partir de ${cfg.idade === 0 ? 'qualquer faixa acima de Livre' : cfg.idade + ' anos'})`);
     }
   }
 
   // Filtro por categoria do Guia dos Pais
-  const restrito = CATEGORIAS.some((c) => cfg.max[c.key] < 3);
+  const restrito = !liberadoPorIdade && CATEGORIAS.some((c) => cfg.max[c.key] < 3);
   if (restrito) {
     if (guia && typeof guia === 'object') {
       for (const c of CATEGORIAS) {
@@ -467,8 +470,10 @@ async function meta(tipo, id, cfg) {
     }
   }
 
-  // Sinopse limpa: nada de texto extra abaixo (classificação e guia ficam nas tags)
-  base.description = limpaDescricao(resumo || base.description || '');
+  // Sinopse + linhas com emoji (classificação e guia dos pais), sem aviso de bloqueio
+  const texto = textoGuia(guia, br);
+  const original = limpaDescricao(resumo || base.description || '');
+  base.description = original ? `${original}\n\n${texto}` : texto;
 
   return { meta: base, bloqueado, motivos, incompleto: guia === undefined };
 }
