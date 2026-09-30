@@ -375,12 +375,10 @@ function idadeDeBR(br) {
 // Retorna a lista de motivos do bloqueio ([] = liberado)
 function motivosBloqueio(cfg, br, guia) {
   const motivos = [];
+  let liberadoPorIdade = false;
 
   // 18 = "Sem limite": não aplica nenhum bloqueio.
-  // A classificação e o Guia dos Pais continuam sendo exibidos em meta.
   if (cfg.idade === 18) return motivos;
-
-  let liberadoPorIdade = false;
 
   // Filtro por idade
   if (cfg.idade < 18) {
@@ -475,10 +473,10 @@ async function meta(tipo, id, cfg) {
     }
   }
 
-  // Sinopse + linhas com emoji (classificação e guia dos pais), sem aviso de bloqueio
-  const texto = textoGuia(guia, br);
+  // Mantem somente a sinopse no texto exibido no navegador.
+  // A classificação e o Guia dos Pais continuam sendo usados para avaliação.
   const original = limpaDescricao(resumo || base.description || '');
-  base.description = original ? `${original}\n\n${texto}` : texto;
+  base.description = original;
 
   return { meta: base, bloqueado, motivos, incompleto: guia === undefined };
 }
