@@ -31,7 +31,7 @@ const CATEGORIAS = [
   { key: 'susto', rotulo: 'Cenas intensas e assustadoras', icone: '😱', ids: ['FRIGHTENING'], texto: /frightening|intense/i },
 ];
 
-const BLOQUEAR_SEM_INFO = process.env.BLOQUEAR_SEM_CLASSIFICACAO !== '0'; // sem classificação conhecida = bloqueia
+const BLOQUEAR_SEM_INFO = process.env.BLOQUEAR_SEM_CLASSIFICACAO === '1'; // modo rígido (opcional): sem informação = bloqueia
 const CFG_PADRAO = { max: { sexo: 3, violencia: 3, palavroes: 3, drogas: 3, susto: 3 }, idade: 18 };
 
 // ───────────────────────── Cache em disco ─────────────────────────
@@ -390,9 +390,7 @@ function motivosBloqueio(cfg, br, guia) {
   // Filtro por categoria do Guia dos Pais
   const restrito = CATEGORIAS.some((c) => cfg.max[c.key] < 3);
   if (restrito) {
-    if (guia === undefined) {
-      motivos.push('Guia dos Pais do IMDb indisponível no momento');
-    } else if (guia && typeof guia === 'object') {
+    if (guia && typeof guia === 'object') {
       for (const c of CATEGORIAS) {
         const n = guia[c.key];
         if (n != null && n > cfg.max[c.key]) {
@@ -459,11 +457,14 @@ async function meta(tipo, id, cfg) {
   }
 
   // Bloqueio: troca os IDs dos vídeos por "gpbloq:..." — os outros addons de stream
-  // só respondem a "tt...", então não aparece nenhuma fonte de vídeo.
+  // só respondem a "tt...", então nenhuma fonte de vídeo aparece.
+  // (NÃO usar behaviorHints.defaultVideoId: ele faz o Stremio pular a tela do título.)
   if (bloqueado) {
-    base.behaviorHints = Object.assign({}, base.behaviorHints, { defaultVideoId: `gpbloq:${imdb}` });
-    if (Array.isArray(base.videos)) {
+    if (Array.isArray(base.videos) && base.videos.length) {
       base.videos = base.videos.map((v) => (v && v.id && !String(v.id).startsWith('gpbloq:') ? { ...v, id: `gpbloq:${v.id}` } : v));
+    } else if (tipo === 'movie') {
+      // filmes não têm lista de vídeos: cria um único vídeo com ID bloqueado
+      base.videos = [{ id: `gpbloq:${imdb}`, title: base.name || imdb, released: base.released || '1970-01-01T00:00:00.000Z' }];
     }
   }
 
