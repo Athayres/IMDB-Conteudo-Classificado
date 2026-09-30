@@ -2,8 +2,8 @@
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
  *  - Exibe a classificação indicativa brasileira e o guia do IMDb na descrição.
- *  - Aplica bloqueio/aviso se o conteúdo exceder a idade ou níveis configurados.
- *  - Tags com formato limpo (ex: 👨‍👩‍👧‍👦 16 anos).
+ *  - Mantém o resumo original mesmo quando o conteúdo é bloqueado.
+ *  - Exibe um card de alerta na aba de vídeos/streams quando o conteúdo ultrapassar a idade.
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave [MDBLIST_KEY=sua_chave] node server.js   →   http://localhost:7000/configure
@@ -31,7 +31,7 @@ const CATEGORIAS = [
   { key: 'susto', rotulo: 'Cenas intensas e assustadoras', icone: '😱', ids: ['FRIGHTENING'], texto: /frightening|intense/i },
 ];
 
-const CFG_PADRAO = { max: { sexo: 3, violencia: 3, palavroes: 3, drogas: 3, susto: 3 }, idade: 18 };
+const CFG_PADRAO = { max: { sexo: 0, violencia: 1, palavroes: 0, drogas: 1, susto: 1 }, idade: 18 };
 
 // ───────────────────────── Cache em disco ─────────────────────────
 let cache = { guias: {}, ids: {}, br: {}, mdb: {} };
@@ -361,20 +361,10 @@ async function classificacaoBR(imdbId, tipo) {
   return classificacaoMDBList(imdbId, tipo);
 }
 
-// ───────────────────────── Metadados ─────────────────────────
-async function meta(tipo, id, cfg) {
+// ───────────────────────── Análise de Dados e Bloqueio ─────────────────────────
+async function obterDadosEBloqueio(tipo, id, cfg) {
   const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
-  if (!/^tt\d+$/.test(imdb)) return null;
-
-  let base = null;
-  try {
-    const r = await fetch(`https://v3-cinemeta.strem.io/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
-    if (r.ok) base = (await r.json()).meta || null;
-  } catch { /* sem Cinemeta */ }
-
-  if (!base) {
-    base = { id: imdb, type: tipo, name: imdb, description: '' };
-  }
+  if (!/^tt\d+$/.test(imdb)) return { imdb, guia: null, br: null, resumo: null, bloqueado: false, motivoBloqueio: '' };
 
   const [guia, br, resumo] = await Promise.all([
     naFilaIMDb(() => buscarGuia(imdb)).catch(() => undefined),
@@ -382,7 +372,6 @@ async function meta(tipo, id, cfg) {
     resumoPtBR(imdb).catch(() => null),
   ]);
 
-  // Checar Bloqueios
   let bloqueado = false;
   let motivoBloqueio = '';
 
@@ -402,6 +391,26 @@ async function meta(tipo, id, cfg) {
       }
     }
   }
+
+  return { imdb, guia, br, resumo, bloqueado, motivoBloqueio };
+}
+
+// ───────────────────────── Metadados ─────────────────────────
+async function meta(tipo, id, cfg) {
+  const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
+  if (!/^tt\d+$/.test(imdb)) return null;
+
+  let base = null;
+  try {
+    const r = await fetch(`https://v3-cinemeta.strem.io/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
+    if (r.ok) base = (await r.json()).meta || null;
+  } catch { /* sem Cinemeta */ }
+
+  if (!base) {
+    base = { id: imdb, type: tipo, name: imdb, description: '' };
+  }
+
+  const { guia, br, resumo, bloqueado, motivoBloqueio } = await obterDadosEBloqueio(tipo, id, cfg);
 
   const novasTags = [];
   if (br) {
@@ -427,16 +436,33 @@ async function meta(tipo, id, cfg) {
   }
 
   const texto = textoGuia(guia, br);
+  const original = limpaDescricao(resumo || base.description || '');
 
   if (bloqueado) {
     base.name = `🔒 [BLOQUEADO] ${base.name}`;
-    base.description = `⚠️ CONTEÚDO BLOQUEADO PELO GUIA DOS PAIS\n\nMotivo: ${motivoBloqueio}\n\n${texto}`;
+    base.description = `⚠️ CONTEÚDO BLOQUEADO PELO GUIA DOS PAIS\nMotivo: ${motivoBloqueio}\n\n${original ? original + '\n\n' : ''}${texto}`;
   } else {
-    const original = limpaDescricao(resumo || base.description || '');
     base.description = original ? `${original}\n\n${texto}` : texto;
   }
 
   return base;
+}
+
+// ───────────────────────── Streams ─────────────────────────
+async function stream(tipo, id, cfg) {
+  const { imdb, bloqueado, motivoBloqueio } = await obterDadosEBloqueio(tipo, id, cfg);
+  if (bloqueado) {
+    return {
+      streams: [
+        {
+          name: 'Guia dos Pais',
+          title: `🛑 CONTEÚDO BLOQUEADO POR IDADE\n${motivoBloqueio}`,
+          externalUrl: `https://www.imdb.com/title/${imdb}/parentalguide/`,
+        },
+      ],
+    };
+  }
+  return { streams: [] };
 }
 
 // ───────────────────────── Manifest ─────────────────────────
@@ -589,7 +615,8 @@ http.createServer(async (req, res) => {
     }
 
     if (partes[0] === 'stream') {
-      return json(res, { streams: [] }, 0);
+      const s = await stream(dec(partes[1]), dec(partes[2]), cfg);
+      return json(res, s, 300);
     }
 
     json(res, { erro: 'não encontrado' }, 0, 404);
