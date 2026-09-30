@@ -2,7 +2,7 @@
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
  *  - Exibe o guia do IMDb e classificação indicativa do Brasil (via TMDB).
- *  - Insere Idade, Sexo, Violência, Palavrões, Drogas e Susto nas tags de Gêneros.
+ *  - Insere Idade, Sexo, Violência, Palavrões, Drogas e Susto numa seção própria de 'Classificação'.
  *  - Modo Informativo: Não altera IDs de vídeo, garantindo compatibilidade total com outros addons.
  *
  * Requer Node 18+. Sem dependências.
@@ -403,7 +403,6 @@ async function streams(id, cfg, tipo) {
   const [guia, br] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb, tipo)]);
   const { av, texto } = blocoGuia(guia, br, cfg);
 
-  // Se NÃO estiver bloqueado, este addon retorna lista vazia para permitir que o Torrentio/outros exibam os vídeos normalmente.
   if (!av.bloqueado) return [];
 
   const url = `https://www.imdb.com/title/${imdb}/parentalguide/`;
@@ -427,7 +426,7 @@ async function meta(tipo, id, cfg) {
 
   const [guia, br, resumo] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb, tipo), resumoPtBR(imdb)]);
 
-  // --- GERAR TAGS DO GUIA DOS PAIS NOS GÊNEROS ---
+  // --- GERAR TAGS DO GUIA DOS PAIS NA CATEGORIA SEPARADA 'CLASSIFICAÇÃO' ---
   const novasTags = [];
 
   if (br) {
@@ -445,35 +444,25 @@ async function meta(tipo, id, cfg) {
   }
 
   if (novasTags.length > 0) {
-    const generosLimpos = (base.genres || []).filter((g) => 
-      !g.includes('Idade:') && !CATEGORIAS.some((c) => g.includes(c.rotulo))
-    );
-    base.genres = [...novasTags, ...generosLimpos];
+    base.links = Array.isArray(base.links) ? base.links : [];
 
-    if (Array.isArray(base.links)) {
-      const linksLimpos = base.links.filter((l) => 
-        !(l && l.name && (l.name.includes('Idade:') || CATEGORIAS.some((c) => l.name.includes(c.rotulo))))
-      );
-      
-      const i = linksLimpos.findIndex((l) => l && l.category === 'Genres');
-      const itensLinks = novasTags.map((tag) => ({
-        name: tag,
-        category: 'Genres',
-        url: `https://www.imdb.com/title/${imdb}/parentalguide/`,
-      }));
+    // Remove eventuais links de Classificação antigos para não duplicar
+    base.links = base.links.filter((l) => !(l && l.category === 'Classificação'));
 
-      if (i >= 0) {
-        linksLimpos.splice(i, 0, ...itensLinks);
-      } else {
-        linksLimpos.push(...itensLinks);
-      }
-      base.links = linksLimpos;
-    }
+    // Adiciona os links com a categoria explícita 'Classificação'
+    const itensLinks = novasTags.map((tag) => ({
+      name: tag,
+      category: 'Classificação',
+      url: `https://www.imdb.com/title/${imdb}/parentalguide/`,
+    }));
+
+    base.links.push(...itensLinks);
   }
 
-  const { texto } = blocoGuia(guia, br, cfg);
+  const { av, texto } = blocoGuia(guia, br, cfg);
 
-  if (Array.isArray(base.videos)) {
+  // --- SÓ ADICIONA NOS EPISÓDIOS (VIDEOS) SE O CONTEÚDO ESTIVER BLOQUEADO ---
+  if (av.bloqueado && Array.isArray(base.videos)) {
     base.videos = base.videos.map((v) => Object.assign({}, v, { overview: v.overview ? `${v.overview}\n\n${texto}` : texto }));
   }
 
@@ -486,10 +475,10 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.6.4',
+    version: '1.6.6',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
-    description: 'Exibe o guia de conteúdo do IMDb e a classificação indicativa brasileira diretamente nos gêneros do Stremio.',
+    description: 'Exibe o guia de conteúdo do IMDb e a classificação indicativa brasileira diretamente em uma categoria de Classificação no Stremio.',
     resources: ['meta', 'stream'],
     types: ['movie', 'series'],
     idPrefixes: ['tt', 'gpbloq:'],
@@ -549,7 +538,7 @@ function paginaConfig(cfg) {
     </div>
     <input id="url" readonly>
     <button class="sec" id="copiar" type="button">Copiar link do addon</button>
-    <small>No modo Informativo (Sem limites), as informações são exibidas apenas na descrição e nas tags de gênero do título, sem nenhum bloqueio de reprodução.</small>
+    <small>No modo Informativo (Sem limites), as informações são exibidas na descrição e em uma seção de Classificação, sem bloquear a reprodução.</small>
   </div>
 </main>
 <script>
