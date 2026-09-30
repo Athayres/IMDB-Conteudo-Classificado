@@ -3,7 +3,7 @@
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
  *  - Exibe a classificação indicativa do Brasil e o guia do IMDb.
  *  - Sem mensagens de bloqueio na aba de vídeos quando estiver sem limites.
- *  - Sem listagem de motivos nos avisos de bloqueio.
+ *  - Proteções reforçadas contra falhas de rede.
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave [MDBLIST_KEY=sua_chave] node server.js   →   http://localhost:7000/configure
@@ -424,33 +424,48 @@ async function streams(id, cfg, tipo) {
   const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return [];
 
-  const [guia, br] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb, tipo)]);
-  const av = avaliar(guia, br, cfg);
+  try {
+    const [guia, br] = await Promise.all([
+      naFilaIMDb(() => buscarGuia(imdb)).catch(() => undefined),
+      classificacaoBR(imdb, tipo).catch(() => null),
+    ]);
+    const av = avaliar(guia, br, cfg);
 
-  if (!av.bloqueado) return [];
+    if (!av.bloqueado) return [];
 
-  return [{
-    name: 'Guia dos Pais',
-    title: 'Bloqueado por filtro',
-    description: 'Este conteúdo foi bloqueado de acordo com as suas configurações.',
-    externalUrl: `https://www.imdb.com/title/${imdb}/parentalguide/`,
-  }];
+    return [{
+      name: 'Guia dos Pais',
+      title: 'Bloqueado por filtro',
+      description: 'Este conteúdo foi bloqueado de acordo com as suas configurações.',
+      externalUrl: `https://www.imdb.com/title/${imdb}/parentalguide/`,
+    }];
+  } catch {
+    return [];
+  }
 }
 
 // ───────────────────────── Metadados ─────────────────────────
 async function meta(tipo, id, cfg) {
   const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return null;
+
   let base = null;
   try {
     const r = await fetch(`https://v3-cinemeta.strem.io/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
     if (r.ok) base = (await r.json()).meta || null;
   } catch { /* sem Cinemeta */ }
-  if (!base) return null;
 
-  const [guia, br, resumo] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb, tipo), resumoPtBR(imdb)]);
+  if (!base) {
+    base = { id: imdb, type: tipo, name: imdb, description: '' };
+  }
 
-  // Adiciona as tags de Classificação no painel de detalhes
+  // Falhas externas não travam a exibição dos metadados no Stremio
+  const [guia, br, resumo] = await Promise.all([
+    naFilaIMDb(() => buscarGuia(imdb)).catch(() => undefined),
+    classificacaoBR(imdb, tipo).catch(() => null),
+    resumoPtBR(imdb).catch(() => null),
+  ]);
+
   const novasTags = [];
   if (br) {
     novasTags.push(`🔞 Idade: ${br === 'L' ? 'Livre' : `${br} anos`}`);
@@ -474,7 +489,6 @@ async function meta(tipo, id, cfg) {
     })));
   }
 
-  // Prepara o texto da descrição limpo
   const { texto } = blocoGuia(guia, br, cfg);
   const original = limpaDescricao(resumo || base.description || '');
   base.description = original ? `${original}\n\n${texto}` : texto;
@@ -486,7 +500,7 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.7.1',
+    version: '1.7.2',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -652,7 +666,7 @@ http.createServer(async (req, res) => {
 
     if (partes[0] === 'meta') {
       const m = await meta(dec(partes[1]), dec(partes[2]), cfg);
-      return m ? json(res, { meta: m }, 300) : json(res, { erro: 'sem metadados' }, 0, 404);
+      return json(res, { meta: m }, 300);
     }
 
     if (partes[0] === 'stream') {
