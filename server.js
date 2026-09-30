@@ -2,9 +2,9 @@
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
  *  - Meta (Tela Principal): Resumo + Guia (App) ou Tags (Web).
- *  - Stream (Tela de Vídeo): Bloqueio ou Fallback inteligente baseado em bandeira consumível.
+ *  - Stream (Tela de Vídeo): Apenas bloqueio de conteúdo baseado nas regras.
  *
- * Versão: 2.1.3
+ * Versão: 2.1.4
  * Requer Node 18+. Sem dependências.
  */
 const http = require('http');
@@ -32,9 +32,6 @@ const CATEGORIAS = [
 
 const BLOQUEAR_SEM_INFO = process.env.BLOQUEAR_SEM_CLASSIFICACAO === '1';
 const CFG_PADRAO = { max: { sexo: 0, violencia: 1, palavroes: 0, drogas: 1, susto: 1 }, idade: 18 };
-
-// Bandeira consumible para rastrear se o /meta (tela principal) rodou com sucesso no topo
-const metaExecutadoNoTopo = new Set();
 
 // ───────────────────────── Cache em disco ─────────────────────────
 let cache = { guias: {}, ids: {}, br: {}, mdb: {} };
@@ -420,10 +417,6 @@ async function meta(tipo, id, cfg, userAgent = '') {
   const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return null;
 
-  // Sinaliza que a tela principal (meta) foi executada com sucesso
-  metaExecutadoNoTopo.add(imdb);
-  setTimeout(() => metaExecutadoNoTopo.delete(imdb), 45000); // Limpeza automática de segurança
-
   let base = null;
   try {
     const r = await fetch(`https://v3-cinemeta.strem.io/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
@@ -486,7 +479,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.1.3',
+    version: '2.1.4',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -645,40 +638,16 @@ http.createServer(async (req, res) => {
       const imdb = dec(partes[2]).replace(/^gpbloq:/, '').split(':')[0];
       if (!/^tt\d+$/.test(imdb)) return json(res, { streams: [] }, 0);
       
-      const { guia, br, motivos } = await avaliar(imdb, tipo, cfg);
+      const { motivos } = await avaliar(imdb, tipo, cfg);
       const streams = [];
 
-      // 1. Se foi bloqueado pelas regras, exibe o aviso principal de bloqueio
+      // A rota de stream agora foca puramente no bloqueio binário estabelecido pelas regras
       if (motivos.length > 0) {
         streams.push({
           name: '🔒 BLOQUEADO',
           description: motivos[0].replace(/\s*\(.*\)\s*$/, ''),
           externalUrl: `https://www.imdb.com/title/${imdb}/parentalguide/`,
         });
-      }
-
-      // 2. FALLBACK INTELIGENTE (Bandeira Consumível):
-      // Verifica se o /meta rodou no topo. Se sim, consumimos a bandeira e omitimos o card na tela de vídeo.
-      if (metaExecutadoNoTopo.has(imdb)) {
-        metaExecutadoNoTopo.delete(imdb); // Consome a bandeira definitivamente
-      } else {
-        // Se a bandeira não existe (addon embaixo e meta silenciado), exibe o Guia organizado na tela de vídeo
-        const linhasGuia = [];
-        if (br) linhasGuia.push(`Classificação: ${br === 'L' ? 'Livre' : br + ' anos'}`);
-        if (guia && typeof guia === 'object') {
-          for (const c of CATEGORIAS) {
-            const n = guia[c.key];
-            if (n != null) linhasGuia.push(`${c.icone} ${c.rotulo}: ${NIVEIS[n]}`);
-          }
-        }
-
-        if (linhasGuia.length > 0) {
-          streams.push({
-            name: '👨‍👩‍👧‍‍👦 Guia dos Pais (IMDb)',
-            description: linhasGuia.join('\n'),
-            externalUrl: `https://www.imdb.com/title/${imdb}/parentalguide/`,
-          });
-        }
       }
 
       return json(res, { streams }, 0);
@@ -690,5 +659,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.1.3 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.1.4 a rodar em http://localhost:${PORT}/configure`);
 });
