@@ -3,9 +3,7 @@
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
  *  - Exibe o guia do IMDb e classificação indicativa do Brasil (via TMDB).
  *  - Insere Idade, Sexo, Violência, Palavrões, Drogas e Susto numa seção própria de 'Classificação'.
- *  - Modo Informativo vs Modo Bloqueio:
- *      • Sem bloqueios: Exibe informações no painel principal (meta).
- *      • Com bloqueio: Exibe o motivo exato do bloqueio nas opções de Stream.
+ *  - Sem duplicações de texto no painel ou nos vídeos.
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave [MDBLIST_KEY=sua_chave] node server.js   →   http://localhost:7000/configure
@@ -83,6 +81,12 @@ function lerConfig(b64) {
     if ([0, 10, 12, 14, 16, 18].includes(idade)) cfg.idade = idade;
   } catch { /* usa padrão */ }
   return cfg;
+}
+
+function limpaDescricao(desc) {
+  if (!desc) return '';
+  // Remove blocos do Guia dos Pais adicionados anteriormente para evitar duplicações
+  return desc.split(/(?:⛔|✅|ℹ️)\s*(?:CONTEÚDO BLOQUEADO|LIBERADO|GUIA DOS PAIS)/i)[0].trim();
 }
 
 // ───────────────────────── IMDb: Guia dos Pais ─────────────────────────
@@ -250,7 +254,7 @@ function avaliar(guia, br, cfg) {
     const idade = idadeDeBR(br);
     if (idade !== null && idade >= limite) {
       const nomeIdade = idade === 0 ? 'Livre' : idade + ' anos';
-      motivos.push(`Classificação indicativa: ${nomeIdade} (seu limite: ${cfg.idade === 0 ? 'Apenas Livre' : 'Até ' + (cfg.idade - 1) + ' anos'})`);
+      motivos.push(`Classificação ${nomeIdade}`);
     }
   }
 
@@ -258,7 +262,7 @@ function avaliar(guia, br, cfg) {
     for (const c of CATEGORIAS) {
       const n = guia[c.key];
       if (n != null && n > cfg.max[c.key]) {
-        motivos.push(`${c.rotulo}: ${NIVEIS[n]} (seu limite: ${NIVEIS[cfg.max[c.key]]})`);
+        motivos.push(`${c.rotulo}: ${NIVEIS[n]}`);
       }
     }
   }
@@ -267,28 +271,39 @@ function avaliar(guia, br, cfg) {
 }
 
 function textoGuia(guia, br) {
-  let linhas;
-  if (guia === undefined) linhas = ['ℹ Guia dos Pais do IMDb indisponível no momento'];
-  else if (guia === null) linhas = ['ℹ Este título não possui Guia dos Pais no IMDb (sem votos)'];
-  else linhas = CATEGORIAS.map((c) => `${c.icone} ${c.rotulo}: ${guia[c.key] != null ? `${COR[guia[c.key]]}${NIVEIS[guia[c.key]]}` : 'sem votos'}`);
-  if (br) linhas.unshift(`👪 Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
+  const linhas = [];
+  if (br) linhas.push(`👪 Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
+
+  if (guia === undefined) {
+    linhas.push('ℹ Guia dos Pais do IMDb indisponível no momento');
+  } else if (guia === null) {
+    linhas.push('ℹ Este título não possui Guia dos Pais no IMDb (sem votos)');
+  } else {
+    for (const c of CATEGORIAS) {
+      const n = guia[c.key];
+      if (n != null) {
+        linhas.push(`${c.icone} ${c.rotulo}: ${COR[n]} ${NIVEIS[n]}`);
+      }
+    }
+  }
+
   return linhas.map((l) => '• ' + l).join('\n');
 }
 
-function blocoGuia(guia, br, cfg, mostrarIdade = true) {
+function blocoGuia(guia, br, cfg) {
   const av = avaliar(guia, br, cfg);
-  let topo = '✅ Liberado pelo Guia dos Pais\n';
-  
+  let topo = '';
+
   if (av.bloqueado) {
     topo = '⛔ CONTEÚDO BLOQUEADO PELO GUIA DOS PAIS\n';
-    if (av.motivos.length > 0) {
-      topo += '\n⚠️ Motivo(s) do bloqueio:\n' + av.motivos.map((m) => ` ❌ ${m}`).join('\n') + '\n\n';
-    }
-  } else if (!limitesAtivos(cfg)) {
-    topo = 'ℹ️ GUIA DOS PAIS (Modo Informativo)\n';
+    topo += `⚠️ Motivo(s): ${av.motivos.join(' | ')}\n\n`;
+  } else if (limitesAtivos(cfg)) {
+    topo = '✅ LIBERADO PELO GUIA DOS PAIS\n\n';
+  } else {
+    topo = 'ℹ️️ GUIA DOS PAIS (Modo Informativo)\n\n';
   }
 
-  return { av, texto: `${topo}${textoGuia(guia, mostrarIdade ? br : null)}` };
+  return { av, texto: `${topo}${textoGuia(guia, br)}` };
 }
 
 // ───────────────────────── TMDB ─────────────────────────
@@ -410,17 +425,17 @@ async function streams(id, cfg, tipo) {
   if (!/^tt\d+$/.test(imdb)) return [];
 
   const [guia, br] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb, tipo)]);
-  const { av, texto } = blocoGuia(guia, br, cfg);
+  const av = avaliar(guia, br, cfg);
 
-  // Se NÃO estiver bloqueado, não gera nenhum aviso na lista de streams (deixa tocar livremente)
+  // Se NÃO estiver bloqueado, não gera nenhum stream falso
   if (!av.bloqueado) return [];
 
-  // Se ESTIVER BLOQUEADO, envia um aviso explicativo na área de streams
+  // Se estiver bloqueado, gera um aviso direto e conciso nas opções de reprodução
   const url = `https://www.imdb.com/title/${imdb}/parentalguide/`;
   return [{
     name: '⛔ Guia dos Pais',
-    title: '⚠️ REPRODUÇÃO BLOQUEADA PELOS FILTROS',
-    description: texto.replace(/^• /gm, '') + '\n\n(Toque para ver o guia completo no IMDb)',
+    title: '⚠️ REPRODUÇÃO BLOQUEADA',
+    description: `Este conteúdo foi bloqueado pelos seus filtros.\n\nMotivo(s):\n${av.motivos.map((m) => '• ' + m).join('\n')}\n\n(Toque para ver no IMDb)`,
     externalUrl: url,
   }];
 }
@@ -438,14 +453,11 @@ async function meta(tipo, id, cfg) {
 
   const [guia, br, resumo] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb, tipo), resumoPtBR(imdb)]);
 
-  // --- GERAR TAGS DO GUIA DOS PAIS NA CATEGORIA SEPARADA 'CLASSIFICAÇÃO' ---
+  // Adiciona as tags de Classificação no painel de links/tags
   const novasTags = [];
-
   if (br) {
-    const rotuloIdade = br === 'L' ? 'Livre' : `${br} anos`;
-    novasTags.push(`🔞 Idade: ${rotuloIdade}`);
+    novasTags.push(`🔞 Idade: ${br === 'L' ? 'Livre' : `${br} anos`}`);
   }
-
   if (guia && typeof guia === 'object') {
     for (const c of CATEGORIAS) {
       const n = guia[c.key];
@@ -457,24 +469,17 @@ async function meta(tipo, id, cfg) {
 
   if (novasTags.length > 0) {
     base.links = Array.isArray(base.links) ? base.links : [];
-
-    // Remove eventuais links de Classificação antigos para não duplicar
     base.links = base.links.filter((l) => !(l && l.category === 'Classificação'));
-
-    // Adiciona os links com a categoria explícita 'Classificação'
-    const itensLinks = novasTags.map((tag) => ({
+    base.links.push(...novasTags.map((tag) => ({
       name: tag,
       category: 'Classificação',
       url: `https://www.imdb.com/title/${imdb}/parentalguide/`,
-    }));
-
-    base.links.push(...itensLinks);
+    })));
   }
 
+  // Prepara o texto da descrição limpo, sem duplicações acumuladas
   const { texto } = blocoGuia(guia, br, cfg);
-
-  // Exibe a informação do Guia dos Pais exclusivamente na descrição do painel principal
-  const original = resumo || base.description || '';
+  const original = limpaDescricao(resumo || base.description || '');
   base.description = original ? `${original}\n\n${texto}` : texto;
 
   return base;
@@ -484,7 +489,7 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.6.8',
+    version: '1.6.9',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe o guia de conteúdo do IMDb e a classificação indicativa brasileira diretamente em uma categoria de Classificação no Stremio.',
