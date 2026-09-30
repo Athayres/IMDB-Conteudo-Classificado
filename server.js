@@ -1,9 +1,9 @@
 'use strict';
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
- *  - No App (Linux, Windows, Mobile): exibe o texto do guia abaixo da sinopse.
- *  - No Navegador Web: mantém a sinopse limpa sem o bloco de texto.
- *  - Mantém links/botões nos menus em ambas as plataformas.
+ *  - Exibe classificação indicativa nos gêneros/tags do Stremio Linux/Windows/App.
+ *  - Fallback automático de classificação se a TMDB_KEY não estiver presente.
+ *  - No App: exibe o texto do guia na sinopse. No Navegador Web: mantém a sinopse limpa.
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave node server.js   →   http://localhost:7000/configure
@@ -375,9 +375,21 @@ async function meta(tipo, id, cfg, sistema = 'Desconhecido') {
 
   base.links = Array.isArray(base.links) ? base.links.slice() : [];
 
+  // 1. Obtém classificação etária (TMDB) ou gera estimativa via IMDb caso sem TMDB
+  let idadeTexto = null;
   if (br) {
-    const idadeTexto = br === 'L' ? 'Livre' : `${br} anos`;
-    const idadeTag = `Idade: ${br === 'L' ? 'Livre' : br}`;
+    idadeTexto = br === 'L' ? 'Livre' : `${br} anos`;
+  } else if (guia && typeof guia === 'object') {
+    const maxN = Math.max(...Object.values(guia).filter((n) => n != null), -1);
+    if (maxN === 3) idadeTexto = '18 anos';
+    else if (maxN === 2) idadeTexto = '14 anos';
+    else if (maxN === 1) idadeTexto = '10 anos';
+    else if (maxN === 0) idadeTexto = 'Livre';
+  }
+
+  // 2. Anexa a Tag de Classificação tanto nos Gêneros (Pílula no Linux) quanto nos Links
+  if (idadeTexto) {
+    const idadeTag = `Classificação: ${idadeTexto}`;
 
     base.links.unshift({
       name: idadeTexto,
@@ -410,7 +422,6 @@ async function meta(tipo, id, cfg, sistema = 'Desconhecido') {
 
   const descBase = resumo || base.description || '';
 
-  // Exibe o texto do guia abaixo da sinopse SOMENTE no App. No Navegador (Web), mantém a sinopse limpa.
   if (sistema.startsWith('App')) {
     base.description = `${descBase}\n\n${texto}`.trim();
   } else {
@@ -424,7 +435,7 @@ async function meta(tipo, id, cfg, sistema = 'Desconhecido') {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.5.4',
+    version: '1.5.5',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia, classificação indicativa nos gêneros e bloqueia títulos.',
@@ -557,5 +568,5 @@ http.createServer(async (req, res) => {
   }
 }).listen(PORT, () => {
   console.log(`Guia dos Pais (IMDb) a rodar em http://localhost:${PORT}/configure`);
-  if (!TMDB_KEY) console.log('⚠ Defina TMDB_KEY (opcional) para ter a classificação indicativa do Brasil.');
+  if (!TMDB_KEY) console.log('⚠ TMDB_KEY não definida: o addon usará a estimativa indicativa do IMDb.');
 });
