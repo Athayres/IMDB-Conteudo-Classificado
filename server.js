@@ -34,7 +34,7 @@ const CATEGORIAS = [
 ];
 
 // Padrão: Sem limite (18 = Apenas aviso, sem bloqueios)
-const CFG_PADRAO = { max: { sexo: 3, violencia: 3, palavroes: 3, drogas: 3, susto: 3 }, idade: 18, painel: 'bloqueado' };
+const CFG_PADRAO = { max: { sexo: 0, violencia: 1, palavroes: 0, drogas: 1, susto: 1 }, idade: 18, painel: 'bloqueado' };
 
 // ───────────────────────── Cache em disco ─────────────────────────
 let cache = { guias: {}, ids: {}, br: {}, mdb: {} };
@@ -473,7 +473,7 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.6.0',
+    version: '1.6.1',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia, classificação indicativa nos gêneros e bloqueia títulos.',
@@ -569,12 +569,13 @@ function json(res, obj, maxAge = 0, status = 200) {
   res.end(JSON.stringify(obj));
 }
 
-const RESERVADOS = new Set(['configure', 'manifest.json', 'stream', 'meta', 'health', 'debug']);
+const RESERVADOS = new Set(['configure', 'manifest.json', 'stream', 'meta', 'health', 'debug', 'config.json', 'avaliar']);
 
 http.createServer(async (req, res) => {
   try {
     if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' }); return res.end(); }
-    const { pathname } = new URL(req.url, 'http://x');
+    const url = new URL(req.url, 'http://x');
+    const pathname = url.pathname;
     const partes = pathname.split('/').filter(Boolean);
     if (!partes.length) { res.writeHead(302, { Location: '/configure' }); return res.end(); }
     if (partes[0] === 'health') return json(res, { ok: true });
@@ -602,6 +603,17 @@ http.createServer(async (req, res) => {
       return res.end(paginaConfig(cfg));
     }
     if (partes[0] === 'manifest.json') return json(res, manifest());
+
+    // Diagnóstico: mostra os limites que este link de instalação realmente contém
+    if (partes[0] === 'config.json') return json(res, { limitesAtivos: limitesAtivos(cfg), config: cfg });
+    // Diagnóstico: por que um título é (ou não é) bloqueado com estes limites. Ex.: /LINK/avaliar/tt0111161
+    if (partes[0] === 'avaliar') {
+      const imdb = dec(partes[1]);
+      if (!/^tt\d+$/.test(imdb)) return json(res, { erro: 'use /avaliar/tt0111161' }, 0, 400);
+      const tipo = url.searchParams.get('tipo') === 'series' ? 'series' : 'movie';
+      const [guia, br] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb, tipo)]);
+      return json(res, { limitesAtivos: limitesAtivos(cfg), config: cfg, classificacaoBR: br, guia: guia === undefined ? 'erro ao consultar o IMDb' : guia, resultado: avaliar(guia, br, cfg) });
+    }
 
     if (partes[0] === 'meta') {
       const m = await meta(dec(partes[1]), dec(partes[2]), cfg);
