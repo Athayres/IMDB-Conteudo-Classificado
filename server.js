@@ -468,9 +468,8 @@ async function meta(tipo, id, cfg) {
   }
 
   const texto = textoGuia(guia, br);
-  const aviso = bloqueado ? `🔒 CONTEÚDO BLOQUEADO\n${motivos.map((m) => '• ' + m).join('\n')}\n\n` : '';
   const original = limpaDescricao(resumo || base.description || '');
-  base.description = `${aviso}${original ? `${original}\n\n${texto}` : texto}`;
+  base.description = original ? `${original}\n\n${texto}` : texto;
 
   return { meta: base, bloqueado, motivos, incompleto: guia === undefined };
 }
