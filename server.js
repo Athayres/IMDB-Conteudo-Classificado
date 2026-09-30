@@ -1,10 +1,9 @@
 'use strict';
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
- *  - Mostra o guia do IMDb e classificação indicativa do Brasil (via TMDB).
- *  - Insere Idade, Sexo, Violência, Palavrões, Drogas e Susto como etiquetas nos Gêneros.
- *  - Compatível com Stremio App e Stremio Web.
- *  - Sem nenhum limite escolhido, funciona apenas como aviso na descrição (não bloqueia nem exibe nada na lista de vídeos).
+ *  - Exibe o guia do IMDb e classificação indicativa do Brasil (via TMDB).
+ *  - Insere Idade, Sexo, Violência, Palavrões, Drogas e Susto nas tags de Gêneros.
+ *  - Modo Informativo: Não altera IDs de vídeo, garantindo compatibilidade total com outros addons.
  *
  * Requer Node 18+. Sem dependências.
  *   TMDB_KEY=sua_chave [MDBLIST_KEY=sua_chave] node server.js   →   http://localhost:7000/configure
@@ -15,12 +14,11 @@ const path = require('path');
 
 const PORT = process.env.PORT || 7000;
 const TMDB_KEY = process.env.TMDB_KEY || '';
-const MDBLIST_KEY = process.env.MDBLIST_KEY || ''; // opcional: reserva de idade quando o TMDB não tem
+const MDBLIST_KEY = process.env.MDBLIST_KEY || '';
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { /* ignora */ }
 const CACHE_FILE = path.join(DATA_DIR, 'cache.json');
 const GUIA_TTL = 30 * 24 * 3600 * 1000; // 30 dias
-const BLOQ = 'gpbloq:'; // prefixo de id para títulos bloqueados
 const LOGO = 'https://raw.githubusercontent.com/Athayres/IMDB-Conteudo-Classificado/refs/heads/main/logo_family.jpg';
 
 const NIVEIS = ['Nenhum', 'Leve', 'Moderado', 'Grave'];
@@ -239,7 +237,6 @@ function limitesAtivos(cfg) {
 }
 
 function avaliar(guia, br, cfg) {
-  // Se não há nenhum limite ativado (modo totalmente informativo), NUNCA bloqueia
   if (!limitesAtivos(cfg)) {
     return { bloqueado: false, motivos: [] };
   }
@@ -400,14 +397,13 @@ async function classificacaoBR(imdbId, tipo) {
 
 // ───────────────────────── Streams ─────────────────────────
 async function streams(id, cfg, tipo) {
-  const bloqueadoPeloId = id.startsWith(BLOQ);
-  const imdb = (bloqueadoPeloId ? id.slice(BLOQ.length) : id).split(':')[0];
+  const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return [];
 
   const [guia, br] = await Promise.all([naFilaIMDb(() => buscarGuia(imdb)), classificacaoBR(imdb, tipo)]);
   const { av, texto } = blocoGuia(guia, br, cfg);
 
-  // CORREÇÃO CRÍTICA: Se av.bloqueado for false na configuração atual, NUNCA bloqueia
+  // Se NÃO estiver bloqueado, este addon retorna lista vazia para permitir que o Torrentio/outros exibam os vídeos normalmente.
   if (!av.bloqueado) return [];
 
   const url = `https://www.imdb.com/title/${imdb}/parentalguide/`;
@@ -420,7 +416,7 @@ async function streams(id, cfg, tipo) {
 
 // ───────────────────────── Metadados ─────────────────────────
 async function meta(tipo, id, cfg) {
-  const imdb = id.split(':')[0];
+  const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
   if (!/^tt\d+$/.test(imdb)) return null;
   let base = null;
   try {
@@ -475,12 +471,7 @@ async function meta(tipo, id, cfg) {
     }
   }
 
-  const { av, texto } = blocoGuia(guia, br, cfg);
-
-  if (av.bloqueado) {
-    if (tipo === 'movie') base.behaviorHints = Object.assign({}, base.behaviorHints, { defaultVideoId: BLOQ + imdb });
-    if (Array.isArray(base.videos)) base.videos = base.videos.map((v) => Object.assign({}, v, { id: BLOQ + v.id }));
-  }
+  const { texto } = blocoGuia(guia, br, cfg);
 
   if (Array.isArray(base.videos)) {
     base.videos = base.videos.map((v) => Object.assign({}, v, { overview: v.overview ? `${v.overview}\n\n${texto}` : texto }));
@@ -495,13 +486,13 @@ async function meta(tipo, id, cfg) {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '1.6.3',
+    version: '1.6.4',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
-    description: 'Controle parental e guia informativo IMDb: exibe os níveis do guia, classificação indicativa nos gêneros e bloqueia títulos.',
+    description: 'Exibe o guia de conteúdo do IMDb e a classificação indicativa brasileira diretamente nos gêneros do Stremio.',
     resources: ['meta', 'stream'],
     types: ['movie', 'series'],
-    idPrefixes: ['tt', BLOQ],
+    idPrefixes: ['tt', 'gpbloq:'],
     catalogs: [],
     behaviorHints: { configurable: configuravel },
   };
