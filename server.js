@@ -1,11 +1,11 @@
 'use strict';
 /**
- * Addon Stremio – Guia dos Pais (IMDb) com Trava de Prefixo
- *  - Usa o prefixo 'gpbloq:' para desativar outros addons (Torrentio, SuperFlix) em filmes bloqueados.
- *  - Oferece catálogos filtrados para navegação segura.
- *  - Regra rigorosa para 12 anos (bloqueia +18 e conteúdo Grave do IMDb).
+ * Addon Stremio – Guia dos Pais (IMDb)
+ *  - Painel de configuração visual completo em /configure.
+ *  - Trava por prefixo 'gpbloq:' para desativar outros addons (Torrentio, SuperFlix) em conteúdos bloqueados.
+ *  - Regra rigorosa para 12 anos (bloqueia conteúdos +18 e 'Grave' no IMDb).
  *
- * Requer Node 18+. Sem dependências.
+ * Requer Node 18+. Sem dependências externas.
  */
 const http = require('http');
 const fs = require('fs');
@@ -15,6 +15,7 @@ const PORT = process.env.PORT || 7000;
 const TMDB_KEY = process.env.TMDB_KEY || '';
 const MDBLIST_KEY = process.env.MDBLIST_KEY || '';
 const DATA_DIR = process.env.DATA_DIR || __dirname;
+
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { /* ignora */ }
 const CACHE_FILE = path.join(DATA_DIR, 'cache.json');
 const GUIA_TTL = 30 * 24 * 3600 * 1000;
@@ -144,7 +145,7 @@ async function classificacaoBR(imdbId) {
   } catch { return null; }
 }
 
-// ───────────────────────── Lógica Central de Bloqueio ─────────────────────────
+// ───────────────────────── Lógica de Bloqueio ─────────────────────────
 async function analisarBloqueio(imdb, cfg) {
   const [guia, br] = await Promise.all([
     naFilaIMDb(() => buscarGuia(imdb)).catch(() => null),
@@ -184,7 +185,7 @@ async function analisarBloqueio(imdb, cfg) {
   return { bloqueado, motivo, guia, br };
 }
 
-// ───────────────────────── Rotas de Metadados e Streams ─────────────────────────
+// ───────────────────────── Metadados e Streams ─────────────────────────
 async function meta(tipo, id, cfg) {
   const ehBloqueadoPeloID = id.startsWith('gpbloq:');
   const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
@@ -194,13 +195,12 @@ async function meta(tipo, id, cfg) {
   try {
     const r = await fetch(`https://v3-cinemeta.strem.io/meta/${tipo}/${imdb}.json`);
     if (r.ok) base = (await r.json()).meta;
-  } catch { /* falha cinemeta */ }
+  } catch { /* erro no cinemeta */ }
 
   if (!base) base = { id, type: tipo, name: imdb, description: '' };
 
   const { bloqueado, motivo, guia, br } = await analisarBloqueio(imdb, cfg);
 
-  // Mantém o ID alterado se estiver bloqueado
   base.id = (bloqueado || ehBloqueadoPeloID) ? `gpbloq:${imdb}` : imdb;
 
   let descExtra = `\n\n• Classificação: ${br ? (br === 'L' ? 'Livre' : br + ' anos') : 'Não informada'}`;
@@ -223,7 +223,7 @@ async function meta(tipo, id, cfg) {
 async function stream(tipo, id, cfg) {
   const ehBloqueadoPeloID = id.startsWith('gpbloq:');
   const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
-  
+
   const { bloqueado, motivo } = await analisarBloqueio(imdb, cfg);
 
   if (bloqueado || ehBloqueadoPeloID) {
@@ -244,16 +244,104 @@ async function stream(tipo, id, cfg) {
 function manifest() {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.1.0',
+    version: '2.1.1',
     name: 'Guia dos Pais (Bloqueio Total)',
     logo: LOGO,
-    description: 'Aplica a trava gpbloq: para desativar addons externos em filmes +18.',
+    description: 'Bloqueio parental com trava de prefixo para desativar addons externos.',
     resources: ['meta', 'stream'],
     types: ['movie', 'series'],
     idPrefixes: ['tt', 'gpbloq:'],
     catalogs: [],
     behaviorHints: { configurable: true },
   };
+}
+
+// ───────────────────────── Interface do Painel de Configuração ─────────────────────────
+function paginaConfig(cfg) {
+  const linhas = CATEGORIAS.map((c) => `
+      <label>${c.icone} ${c.rotulo}
+        <select data-cat="${c.key}">
+          ${NIVEIS.map((n, i) => `<option value="${i}">${i === 3 ? 'Permitir até Grave' : 'Permitir até: ' + n}</option>`).join('')}
+        </select>
+      </label>`).join('');
+
+  return `<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Guia dos Pais – Configurar</title>
+<link rel="icon" href="${LOGO}">
+<style>
+  :root{color-scheme:light dark;--bg:#f6f5fb;--fg:#1b1b26;--card:#fff;--bd:#d9d7e6;--ac:#6b4cff;--sec:#8b5cf6}
+  @media(prefers-color-scheme:dark){:root{--bg:#14141c;--fg:#ececf5;--card:#1e1e2a;--bd:#34344a}}
+  body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--fg)}
+  main{max-width:520px;margin:0 auto;padding:24px 16px}
+  h1{font-size:1.4rem;margin:0 0 4px;display:flex;align-items:center;gap:10px} h1 img{width:44px;height:44px;border-radius:10px} p{opacity:.75;margin:0 0 20px}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;display:grid;gap:14px}
+  label{display:grid;gap:6px;font-weight:600}
+  select,input{font:inherit;padding:10px;border-radius:10px;border:1px solid var(--bd);background:transparent;color:inherit}
+  .btn-group{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  @media(max-width:480px){.btn-group{grid-template-columns:1fr}}
+  a.btn{font:inherit;font-weight:700;border:0;border-radius:10px;padding:12px;background:var(--ac);color:#fff;text-align:center;text-decoration:none;cursor:pointer}
+  a.btn-web{background:var(--sec)}
+  button.sec{font:inherit;font-weight:600;background:transparent;color:var(--fg);border:1px solid var(--bd);border-radius:10px;padding:10px;cursor:pointer}
+  button.reset{font:inherit;font-weight:600;background:#22c55e;color:#fff;border:0;border-radius:10px;padding:10px;cursor:pointer}
+</style></head><body><main>
+  <h1><img src="${LOGO}" alt="">Guia dos Pais (IMDb)</h1>
+  <p>Configure a trava e a classificação indicativa para o Stremio.</p>
+  <div class="card">
+    <button class="reset" id="btnLiberarTudo" type="button">🔓 Liberar Tudo (Sem limites)</button>
+    <label>🇧🇷 Idade Máxima Permitida
+      <select id="idade">
+        <option value="18">18 Anos (Sem restrições)</option>
+        <option value="16">16 Anos (Bloqueia +18)</option>
+        <option value="14">14 Anos (Bloqueia +16 e +18)</option>
+        <option value="12">12 Anos (Bloqueia +14, +16, +18 e Conteúdo Grave)</option>
+        <option value="10">10 Anos (Bloqueia +12 em diante)</option>
+        <option value="0">Livre (Apenas conteúdo Livre)</option>
+      </select>
+    </label>
+    ${linhas}
+    <div class="btn-group">
+      <a class="btn" id="instalarApp" href="#">Instalar no App</a>
+      <a class="btn btn-web" id="instalarWeb" target="_blank" href="#">Instalar no Web</a>
+    </div>
+    <input id="url" readonly>
+    <button class="sec" id="copiar" type="button">Copiar link do addon</button>
+  </div>
+</main>
+<script>
+  var CFG = ${JSON.stringify(cfg)};
+  var sels = document.querySelectorAll('select[data-cat]');
+  sels.forEach(function(s){ s.value = CFG.max[s.dataset.cat]; s.onchange = atualizar; });
+  var id = document.getElementById('idade'); if (id) { id.value = CFG.idade; id.onchange = atualizar; }
+  
+  document.getElementById('btnLiberarTudo').onclick = function() {
+    if (id) id.value = '18';
+    sels.forEach(function(s){ s.value = '3'; });
+    atualizar();
+  };
+
+  function atualizar(){
+    var c = { max:{}, idade: id ? Number(id.value) : CFG.idade };
+    sels.forEach(function(s){ c.max[s.dataset.cat] = Number(s.value); });
+    var b64 = btoa(JSON.stringify(c)).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
+    
+    var proto = location.protocol;
+    var host = location.host;
+    var manifestUrl = proto + '//' + host + '/' + b64 + '/manifest.json';
+    var webUrl = 'https://web.stremio.com/#/addons?addon=' + encodeURIComponent(manifestUrl);
+    var appUrl = 'stremio://' + host + '/' + b64 + '/manifest.json';
+    
+    document.getElementById('url').value = manifestUrl;
+    document.getElementById('instalarApp').href = appUrl;
+    document.getElementById('instalarWeb').href = webUrl;
+  }
+  
+  document.getElementById('copiar').onclick = function(){
+    var i = document.getElementById('url'); i.select();
+    (navigator.clipboard ? navigator.clipboard.writeText(i.value) : Promise.resolve(document.execCommand('copy'))).then(function(){ document.getElementById('copiar').textContent = 'Copiado!'; });
+  };
+  atualizar();
+</script></body></html>`;
 }
 
 // ───────────────────────── Servidor HTTP ─────────────────────────
@@ -266,18 +354,26 @@ function json(res, obj, maxAge = 0, status = 200) {
   res.end(JSON.stringify(obj));
 }
 
+const RESERVADOS = new Set(['configure', 'manifest.json', 'stream', 'meta', 'health']);
+
 http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://x');
     const partes = url.pathname.split('/').filter(Boolean);
-    if (!partes.length) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(`<h1>Addon Guia dos Pais Ativo</h1><p>Configure no Stremio usando a URL do manifest.</p>`);
+
+    if (!partes.length) { 
+      res.writeHead(302, { Location: '/configure' }); 
+      return res.end(); 
     }
 
-    const cfgB64 = ['manifest.json', 'stream', 'meta'].includes(partes[0]) ? '' : partes.shift();
+    const cfgB64 = RESERVADOS.has(partes[0]) ? '' : partes.shift();
     const cfg = lerConfig(cfgB64);
     const dec = (s) => decodeURIComponent((s || '').replace(/\.json$/, ''));
+
+    if (partes[0] === 'configure') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(paginaConfig(cfg));
+    }
 
     if (partes[0] === 'manifest.json') return json(res, manifest());
 
@@ -297,5 +393,5 @@ http.createServer(async (req, res) => {
     json(res, { streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+  console.log(`Guia dos Pais ativo em http://localhost:${PORT}/configure`);
 });
