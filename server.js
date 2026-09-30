@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
- *  - Exibe a classificação e o guia na descrição para Aplicativos nativos.
+ *  - Exibe o resumo do TMDB em cima e o Guia dos Pais abaixo na descrição para Aplicativos nativos.
  *  - Exibe em Tags para o Navegador Web.
  *
  * Requer Node 18+. Sem dependências.
@@ -439,11 +439,15 @@ async function meta(tipo, id, cfg, userAgent = '') {
   const original = limpaDescricao(resumo || base.description || '');
 
   if (isApp) {
-    // APLICATIVO NATIVO: As informações do Guia vão diretamente para a DESCRIÇÃO (Texto)
-    const texto = textoGuia(guia, br);
-    base.description = original ? `${texto}\n\n${original}` : texto;
+    // APLICATIVO NATIVO: Resumo em cima, Guia dos Pais logo abaixo
+    const textoGuiaPais = textoGuia(guia, br);
+    if (original && textoGuiaPais) {
+      base.description = `${original}\n\n${textoGuiaPais}`;
+    } else {
+      base.description = original || textoGuiaPais;
+    }
   } else {
-    // NAVEGADOR WEB: A descrição fica limpa e as informações vão em TAGS (links)
+    // NAVEGADOR WEB: A descrição fica limpa (apenas o resumo original) e as informações vão em TAGS (links)
     base.description = original;
 
     const novasTags = [];
