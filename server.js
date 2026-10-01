@@ -46,7 +46,7 @@ function salvar() {
 }
 
 // ───────────────────────── Utilidades ─────────────────────────
-function limitar(n) {
+function limitar(n, maxFila = Infinity) {
   let ativos = 0;
   const fila = [];
   const prox = () => {
@@ -55,9 +55,12 @@ function limitar(n) {
     const { fn, res, rej } = fila.shift();
     fn().then(res, rej).finally(() => { ativos--; prox(); });
   };
-  return (fn) => new Promise((res, rej) => { fila.push({ fn, res, rej }); prox(); });
+  return (fn) => new Promise((res, rej) => {
+    if (fila.length >= maxFila) return rej(new Error('fila cheia'));
+    fila.push({ fn, res, rej }); prox();
+  });
 }
-const naFilaIMDb = limitar(3);
+const naFilaIMDb = limitar(3, 30);
 
 function nivelDe(v) {
   switch (String(v || '').toUpperCase().replace(/VOTES$/, '')) {
@@ -97,7 +100,7 @@ async function baixarPaginaIMDb(imdbId) {
   try {
     const r = await fetch(`https://www.imdb.com/title/${imdbId}/parentalguide/`, {
       headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9', Accept: 'text/html,application/xhtml+xml' },
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(6000),
     });
     return { status: r.status, html: await r.text() };
   } catch (e) { return { status: 0, html: '', erro: String((e && e.message) || e) }; }
@@ -110,7 +113,7 @@ async function baixarGraphQL(imdbId) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': UA, Origin: 'https://www.imdb.com', Referer: 'https://www.imdb.com/' },
       body: JSON.stringify({ query: GQL_QUERY, variables: { id: imdbId } }),
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(6000),
     });
     const texto = await r.text();
     let json = null;
@@ -220,14 +223,28 @@ async function consultarIMDb(imdbId) {
   return { guia: g, falhou: !g && p.status !== 200, dbg };
 }
 
+const guiasEmVoo = new Map();
+const guiasFalhas = new Map();
+const FALHA_TTL = 2 * 60 * 1000;
+
 async function buscarGuia(imdbId) {
   const c = cache.guias[imdbId];
   if (c && Date.now() - c.t < (c.g ? GUIA_TTL : NULO_TTL)) return c.g;
-  const r = await consultarIMDb(imdbId);
-  if (r.falhou) return undefined;
-  cache.guias[imdbId] = { t: Date.now(), g: r.guia };
-  salvar();
-  return r.guia;
+  if ((guiasFalhas.get(imdbId) || 0) > Date.now()) return undefined;
+  if (guiasEmVoo.has(imdbId)) return guiasEmVoo.get(imdbId);
+  const p = (async () => {
+    const r = await naFilaIMDb(() => consultarIMDb(imdbId));
+    if (r.falhou) {
+      if (guiasFalhas.size >= 2000) guiasFalhas.clear();
+      guiasFalhas.set(imdbId, Date.now() + FALHA_TTL);
+      return undefined;
+    }
+    cache.guias[imdbId] = { t: Date.now(), g: r.guia };
+    salvar();
+    return r.guia;
+  })().finally(() => guiasEmVoo.delete(imdbId));
+  guiasEmVoo.set(imdbId, p);
+  return p;
 }
 
 function textoGuia(guia, br) {
@@ -408,7 +425,7 @@ function motivosBloqueio(cfg, br, guia) {
 
 async function avaliar(imdb, tipo, cfg) {
   const [guia, br] = await Promise.all([
-    naFilaIMDb(() => buscarGuia(imdb)).catch(() => undefined),
+    buscarGuia(imdb).catch(() => undefined),
     classificacaoBR(imdb, tipo).catch(() => null),
   ]);
   return { guia, br, motivos: motivosBloqueio(cfg, br, guia) };
@@ -654,7 +671,7 @@ http.createServer(async (req, res) => {
     if (partes[0] === 'avaliar') {
       const imdb = dec(partes[2]).replace(/^gpbloq:/, '').split(':')[0];
       if (!/^tt\d+$/.test(imdb)) return json(res, { erro: 'use /avaliar/movie/tt1234567' }, 0, 400);
-      const r = avaliar(imdb, dec(partes[1]), cfg);
+      const r = await avaliar(imdb, dec(partes[1]), cfg);
       return json(res, { imdb, config: cfg, classificacaoBR: r.br, guia: r.guia, bloqueado: r.motivos.length > 0, motivos: r.motivos }, 0);
     }
 
