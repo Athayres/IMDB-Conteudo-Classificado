@@ -1,10 +1,10 @@
 'use strict';
 /**
  * Addon Stremio – Classificador de IMPROPRIO (IMDb) em PT-BR
- *  - Meta (Tela Principal): Géneros (Etiquetas) unificados para App, TV e Web.
+ *  - Meta (Tela Principal): Resumo + Guia (App) ou Tags (Web).
  *  - Stream (Tela de Vídeo): Apenas bloqueio de conteúdo baseado nas regras.
  *
- * Versão: 2.1.6 (Com Tags em Géneros - Opção 2)
+ * Versão: 2.1.5 (Com Fallback de Certificação e Preservação de Géneros)
  * Requer Node 18+. Sem dependências.
  */
 const http = require('http');
@@ -230,6 +230,26 @@ async function buscarGuia(imdbId) {
   return r.guia;
 }
 
+function textoGuia(guia, br) {
+  const linhas = [];
+  if (br) linhas.push(`Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
+
+  if (guia === undefined) {
+    linhas.push('Guia dos Pais do IMDb indisponível no momento');
+  } else if (guia === null) {
+    linhas.push('Este título não possui Guia dos Pais no IMDb');
+  } else {
+    for (const c of CATEGORIAS) {
+      const n = guia[c.key];
+      if (n != null) {
+        linhas.push(`${c.icone} ${c.rotulo}: ${COR[n]} ${NIVEIS[n]}`);
+      }
+    }
+  }
+
+  return linhas.map((l) => '• ' + l).join('\n');
+}
+
 // ───────────────────────── TMDB ─────────────────────────
 async function tmdb(caminho, params = {}) {
   const u = new URL('https://api.themoviedb.org/3' + caminho);
@@ -425,26 +445,47 @@ async function meta(tipo, id, cfg, userAgent = '') {
     classificacaoFinal = base.certification;
   }
 
-  // 1. Descrição fica limpa apenas com a sinopse original
-  base.description = limpaDescricao(resumo || base.description || '');
-
-  // 2. Organiza os géneros e adiciona a classificação e o Guia dos Pais no final (Opção 2)
+  // 🛡️ GARANTE QUE A IDADE NÃO SEJA APAGADA E FIQUE NOS GÊNEROS
   base.genres = Array.isArray(base.genres) ? base.genres : [];
-  base.genres = base.genres.filter(g => !/^(L|Livre|\d+\s*anos?|[🔞🩸🤬🍺😱])/i.test(g));
-
   if (classificacaoFinal) {
     const rotuloBr = /^(l|livre)$/i.test(classificacaoFinal) 
       ? 'Livre' 
       : (/^\d+$/.test(String(classificacaoFinal).trim()) ? `${classificacaoFinal} anos` : classificacaoFinal);
-    base.genres.push(`🇧🇷 ${rotuloBr}`);
+
+    // Remove versões anteriores de idade/classificação para evitar duplicatas nos géneros
+    base.genres = base.genres.filter(g => !/^(L|Livre|\d+\s*anos?)$/i.test(g));
+    // Insere a idade no topo dos géneros
+    base.genres.unshift(rotuloBr);
   }
 
-  if (guia && typeof guia === 'object') {
-    for (const c of CATEGORIAS) {
-      const n = guia[c.key];
-      if (n != null) {
-        base.genres.push(`${c.icone} ${c.rotulo.split(' ')[0]}: ${NIVEIS[n]}`);
+  const isApp = /stremio/i.test(userAgent);
+  const original = limpaDescricao(resumo || base.description || '');
+
+  if (isApp) {
+    const textoGuiaPais = textoGuia(guia, classificacaoFinal);
+    if (original && textoGuiaPais) {
+      base.description = `${original}\n\n${textoGuiaPais}`;
+    } else {
+      base.description = original || textoGuiaPais;
+    }
+  } else {
+    base.description = original;
+    const novasTags = [];
+    if (classificacaoFinal) novasTags.push(`👨‍👩‍👧‍👦 ${/^(l|livre)$/i.test(classificacaoFinal) ? 'Livre' : `${classificacaoFinal} anos`}`);
+    if (guia && typeof guia === 'object') {
+      for (const c of CATEGORIAS) {
+        const n = guia[c.key];
+        if (n != null) novasTags.push(`${c.icone} ${c.rotulo}: ${NIVEIS[n]}`);
       }
+    }
+    if (novasTags.length > 0) {
+      base.links = Array.isArray(base.links) ? base.links : [];
+      base.links = base.links.filter((l) => !(l && l.category === 'Classificação'));
+      base.links.push(...novasTags.map((tag) => ({
+        name: tag,
+        category: 'Classificação',
+        url: `https://www.imdb.com/title/${imdb}/parentalguide/`,
+      })));
     }
   }
 
@@ -463,7 +504,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.1.6',
+    version: '2.1.5',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -625,7 +666,7 @@ http.createServer(async (req, res) => {
       const { motivos } = await avaliar(imdb, tipo, cfg);
       const streams = [];
 
-      if (motivos.length > 0) {
+      if (motivos.length >0) {
         streams.push({
           name: '🔒 BLOQUEADO',
           description: motivos[0].replace(/\s*\(.*\)\s*$/, ''),
@@ -642,5 +683,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.1.6 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.1.5 a rodar em http://localhost:${PORT}/configure`);
 });
