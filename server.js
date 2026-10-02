@@ -1,11 +1,7 @@
 'use strict';
 /**
- * Addon Stremio – Guia dos Pais (IMDb) em PT-BR
- *  - Meta (Tela Principal): Resumo + Guia (App) ou Tags (Web).
- *  - Stream (Tela de Vídeo): Apenas bloqueio de conteúdo baseado nas regras.
- *
- * Versão: 2.1.5 (Com Fallback de Certificação e Preservação de Géneros)
- * Requer Node 18+. Sem dependências.
+ * Addon Stremio – Classificador de IMPROPRIO (IMDb) em PT-BR
+ * Versão: 2.2.7 (Sinopse primeiro; Guia e Classificação abaixo dela)
  */
 const http = require('http');
 const fs = require('fs');
@@ -14,12 +10,11 @@ const path = require('path');
 const PORT = process.env.PORT || 7000;
 const TMDB_KEY = process.env.TMDB_KEY || '';
 const MDBLIST_KEY = process.env.MDBLIST_KEY || '';
-// Opcional: URL de instalação do addon de metadados (ex.: AIOMetadata) sem o "/manifest.json".
 const META_URL = (process.env.META_URL || '').replace(/\/+$/, '');
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { /* ignora */ }
 const CACHE_FILE = path.join(DATA_DIR, 'cache.json');
-const GUIA_TTL = 30 * 24 * 3600 * 1000; // 30 dias
+const GUIA_TTL = 30 * 24 * 3600 * 1000;
 const LOGO = 'https://raw.githubusercontent.com/Athayres/IMDB-Conteudo-Classificado/refs/heads/main/logo_family.jpg';
 
 const NIVEIS = ['Nenhum', 'Leve', 'Moderado', 'Grave'];
@@ -35,18 +30,17 @@ const CATEGORIAS = [
 const BLOQUEAR_SEM_INFO = process.env.BLOQUEAR_SEM_CLASSIFICACAO === '1';
 const CFG_PADRAO = { max: { sexo: 0, violencia: 1, palavroes: 0, drogas: 1, susto: 1 }, idade: 18 };
 
-// ───────────────────────── Cache em disco ─────────────────────────
-let cache = { guias: {}, ids: {}, br: {}, mdb: {} };
+let cache = { guias: {}, br: {}, mdb: {} };
 try { cache = Object.assign(cache, JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'))); } catch { /* primeiro uso */ }
 if (cache.v !== 2) { cache.guias = {}; cache.v = 2; }
+delete cache.ids;
 let salvarTimer = null;
 function salvar() {
   clearTimeout(salvarTimer);
   salvarTimer = setTimeout(() => fs.writeFile(CACHE_FILE, JSON.stringify(cache), () => {}), 2000);
 }
 
-// ───────────────────────── Utilidades ─────────────────────────
-function limitar(n) {
+function limitar(n, maxFila = Infinity) {
   let ativos = 0;
   const fila = [];
   const prox = () => {
@@ -55,9 +49,12 @@ function limitar(n) {
     const { fn, res, rej } = fila.shift();
     fn().then(res, rej).finally(() => { ativos--; prox(); });
   };
-  return (fn) => new Promise((res, rej) => { fila.push({ fn, res, rej }); prox(); });
+  return (fn) => new Promise((res, rej) => {
+    if (fila.length >= maxFila) return rej(new Error('fila cheia'));
+    fila.push({ fn, res, rej }); prox();
+  });
 }
-const naFilaIMDb = limitar(3);
+const naFilaIMDb = limitar(3, 30);
 
 function nivelDe(v) {
   switch (String(v || '').toUpperCase().replace(/VOTES$/, '')) {
@@ -89,7 +86,101 @@ function limpaDescricao(desc) {
   return desc.split(/(?:CONTEÚDO BLOQUEADO|LIBERADO|GUIA DOS PAIS|• Classificação|• 👨‍👩‍👧👦|• 🔞|• 🩸|• 🤬|• 🍺|• 😱)/)[0].trim();
 }
 
-// ───────────────────────── IMDb: Guia dos Pais ─────────────────────────
+async function tmdb(caminho, params = {}) {
+  const u = new URL('https://api.themoviedb.org/3' + caminho);
+  u.searchParams.set('api_key', TMDB_KEY);
+  u.searchParams.set('language', 'pt-BR');
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  const r = await fetch(u, { signal: AbortSignal.timeout(10000) });
+  if (!r.ok) throw new Error('TMDB ' + r.status);
+  return r.json();
+}
+
+async function resolverImdbId(id, tipo) {
+  const raw = id.replace(/^gpbloq:/, '');
+  const cleanId = raw.split(':')[0];
+  if (/^tt\d+$/.test(cleanId)) return cleanId;
+  if (raw.startsWith('aiom.collection:') || raw.startsWith('tvdbc:')) return null;
+
+  if (!TMDB_KEY) return null;
+
+  // IDs do TMDB de filme e série são independentes: usa só o endpoint do tipo certo
+  const tv = tipo === 'series' || tipo === 'tv';
+  const ext = async (kind, n) => {
+    try { return (await tmdb(`/${kind}/${n}/external_ids`)).imdb_id || null; } catch { return null; }
+  };
+
+  const num = raw.split(':')[1] || '';
+  if ((raw.startsWith('tmdb:') || raw.startsWith('tvdb:')) && !/^\d+$/.test(num)) return null;
+
+  try {
+    if (raw.startsWith('tmdb:')) {
+      return await ext(tv ? 'tv' : 'movie', num);
+    }
+
+    if (raw.startsWith('tvdb:')) {
+      const f = await tmdb(`/find/${num}`, { external_source: 'tvdb_id' });
+      const r = ((tv ? f.tv_results : f.movie_results) || [])[0];
+      return r && r.id ? await ext(tv ? 'tv' : 'movie', r.id) : null;
+    }
+  } catch (e) {
+    console.error('Erro ao resolver ID externo:', e.message);
+  }
+  return null;
+}
+
+const findCache = new Map();
+async function acharTMDB(imdbId) {
+  if (findCache.has(imdbId)) return findCache.get(imdbId);
+  const f = await tmdb(`/find/${imdbId}`, { external_source: 'imdb_id' });
+  if (findCache.size >= 2000) findCache.clear();
+  findCache.set(imdbId, f);
+  return f;
+}
+
+async function resumoPtBR(imdbId) {
+  if (!TMDB_KEY) return null;
+  try {
+    const f = await acharTMDB(imdbId);
+    const movie = (f.movie_results || [])[0];
+    const tv = (f.tv_results || [])[0];
+
+    if (movie) {
+      const detalhe = await tmdb(`/movie/${movie.id}`);
+      if (detalhe && detalhe.overview) return detalhe.overview;
+    }
+    if (tv) {
+      const detalhe = await tmdb(`/tv/${tv.id}`);
+      if (detalhe && detalhe.overview) return detalhe.overview;
+    }
+    return (movie && movie.overview) || (tv && tv.overview) || null;
+  } catch { return null; }
+}
+
+async function classificacaoTMDB(imdbId) {
+  if (!TMDB_KEY) return null;
+  const c = cache.br[imdbId];
+  if (typeof c === 'string') return c; // formato antigo (valor direto)
+  if (c && typeof c === 'object' && Date.now() - c.t < (c.v ? GUIA_TTL : NULO_TTL)) return c.v;
+  try {
+    const f = await acharTMDB(imdbId);
+    let br = null;
+    if (f.movie_results && f.movie_results[0]) {
+      const d = await tmdb(`/movie/${f.movie_results[0].id}/release_dates`);
+      const p = d.results.find((x) => x.iso_3166_1 === 'BR');
+      const rel = p && p.release_dates.find((x) => x.certification);
+      br = rel ? rel.certification : null;
+    } else if (f.tv_results && f.tv_results[0]) {
+      const d = await tmdb(`/tv/${f.tv_results[0].id}/content_ratings`);
+      const p = d.results.find((x) => x.iso_3166_1 === 'BR');
+      br = p ? p.rating || null : null;
+    }
+    cache.br[imdbId] = { t: Date.now(), v: br };
+    salvar();
+    return br;
+  } catch { return null; }
+}
+
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 const NULO_TTL = 12 * 3600 * 1000;
 
@@ -97,7 +188,7 @@ async function baixarPaginaIMDb(imdbId) {
   try {
     const r = await fetch(`https://www.imdb.com/title/${imdbId}/parentalguide/`, {
       headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9', Accept: 'text/html,application/xhtml+xml' },
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(6000),
     });
     return { status: r.status, html: await r.text() };
   } catch (e) { return { status: 0, html: '', erro: String((e && e.message) || e) }; }
@@ -110,11 +201,11 @@ async function baixarGraphQL(imdbId) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': UA, Origin: 'https://www.imdb.com', Referer: 'https://www.imdb.com/' },
       body: JSON.stringify({ query: GQL_QUERY, variables: { id: imdbId } }),
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(6000),
     });
     const texto = await r.text();
     let json = null;
-    try { json = JSON.parse(texto); } catch { /* não é JSON */ }
+    try { json = JSON.parse(texto); } catch {}
     return { status: r.status, json, texto };
   } catch (e) { return { status: 0, json: null, texto: '', erro: String((e && e.message) || e) }; }
 }
@@ -194,45 +285,59 @@ function guiaDeHtml(html) {
 function extrairGuia(html) {
   const m = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
   if (m) {
-    try { const g = guiaDeJson(JSON.parse(m[1])); if (g) return g; } catch { /* tenta o HTML */ }
+    try { const g = guiaDeJson(JSON.parse(m[1])); if (g) return g; } catch {}
   }
   return guiaDeHtml(html);
 }
 
 async function consultarIMDb(imdbId) {
-  const dbg = { imdbId };
   const gq = await baixarGraphQL(imdbId);
-  dbg.graphql = { status: gq.status, erro: gq.erro, inicio: (gq.texto || '').slice(0, 300) };
   if (gq.json) {
     const g = guiaDeJson(gq.json);
-    if (g) return { guia: g, dbg };
-    if (gq.json.data && gq.json.data.title && !gq.json.errors) return { guia: null, dbg };
+    if (g) return { guia: g };
+    if (gq.json.data && gq.json.data.title && !gq.json.errors) return { guia: null };
   }
   const p = await baixarPaginaIMDb(imdbId);
-  dbg.pagina = {
-    status: p.status, erro: p.erro, tamanho: p.html.length,
-    temNextData: p.html.includes('__NEXT_DATA__'),
-    temAdvisory: /advisory-nudity/i.test(p.html),
-    titulo: (p.html.match(/<title>([^<]*)<\/title>/i) || [])[1] || null,
-    inicio: p.html.slice(0, 300),
-  };
   const g = p.html ? extrairGuia(p.html) : null;
-  return { guia: g, falhou: !g && p.status !== 200, dbg };
+  // página 200 sem __NEXT_DATA__ nem seções advisory (captcha/bloqueio) = falha, não "sem guia"
+  const paginaValida = p.status === 200 && (p.html.includes('__NEXT_DATA__') || /advisory-/i.test(p.html));
+  return { guia: g, falhou: !g && !paginaValida };
 }
+
+const guiasEmVoo = new Map();
+const guiasFalhas = new Map();
+const FALHA_TTL = 2 * 60 * 1000;
 
 async function buscarGuia(imdbId) {
   const c = cache.guias[imdbId];
   if (c && Date.now() - c.t < (c.g ? GUIA_TTL : NULO_TTL)) return c.g;
-  const r = await consultarIMDb(imdbId);
-  if (r.falhou) return undefined;
-  cache.guias[imdbId] = { t: Date.now(), g: r.guia };
-  salvar();
-  return r.guia;
+  if ((guiasFalhas.get(imdbId) || 0) > Date.now()) return undefined;
+  if (guiasEmVoo.has(imdbId)) return guiasEmVoo.get(imdbId);
+  const p = (async () => {
+    const r = await naFilaIMDb(() => consultarIMDb(imdbId));
+    if (r.falhou) {
+      if (guiasFalhas.size >= 2000) guiasFalhas.clear();
+      guiasFalhas.set(imdbId, Date.now() + FALHA_TTL);
+      return undefined;
+    }
+    cache.guias[imdbId] = { t: Date.now(), g: r.guia };
+    salvar();
+    return r.guia;
+  })().finally(() => guiasEmVoo.delete(imdbId));
+  guiasEmVoo.set(imdbId, p);
+  return p;
+}
+
+function rotuloClassificacao(br) {
+  const t = String(br).trim();
+  if (/^(l|livre)$/i.test(t)) return 'Livre';
+  if (/^\d+$/.test(t)) return `${t} anos`;
+  return t;
 }
 
 function textoGuia(guia, br) {
   const linhas = [];
-  if (br) linhas.push(`Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
+  if (br) linhas.push(`Classificação indicativa: ${rotuloClassificacao(br)}`);
 
   if (guia === undefined) {
     linhas.push('Guia dos Pais do IMDb indisponível no momento');
@@ -250,58 +355,6 @@ function textoGuia(guia, br) {
   return linhas.map((l) => '• ' + l).join('\n');
 }
 
-// ───────────────────────── TMDB ─────────────────────────
-async function tmdb(caminho, params = {}) {
-  const u = new URL('https://api.themoviedb.org/3' + caminho);
-  u.searchParams.set('api_key', TMDB_KEY);
-  u.searchParams.set('language', 'pt-BR');
-  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
-  const r = await fetch(u, { signal: AbortSignal.timeout(10000) });
-  if (!r.ok) throw new Error('TMDB ' + r.status);
-  return r.json();
-}
-
-const findCache = new Map();
-async function acharTMDB(imdbId) {
-  if (findCache.has(imdbId)) return findCache.get(imdbId);
-  const f = await tmdb(`/find/${imdbId}`, { external_source: 'imdb_id' });
-  if (findCache.size >= 2000) findCache.clear();
-  findCache.set(imdbId, f);
-  return f;
-}
-
-async function resumoPtBR(imdbId) {
-  if (!TMDB_KEY) return null;
-  try {
-    const f = await acharTMDB(imdbId);
-    const it = (f.movie_results || [])[0] || (f.tv_results || [])[0];
-    return it && it.overview ? it.overview : null;
-  } catch { return null; }
-}
-
-async function classificacaoTMDB(imdbId) {
-  if (!TMDB_KEY) return null;
-  if (cache.br[imdbId] !== undefined) return cache.br[imdbId];
-  try {
-    const f = await acharTMDB(imdbId);
-    let br = null;
-    if (f.movie_results && f.movie_results[0]) {
-      const d = await tmdb(`/movie/${f.movie_results[0].id}/release_dates`);
-      const p = d.results.find((x) => x.iso_3166_1 === 'BR');
-      const rel = p && p.release_dates.find((x) => x.certification);
-      br = rel ? rel.certification : null;
-    } else if (f.tv_results && f.tv_results[0]) {
-      const d = await tmdb(`/tv/${f.tv_results[0].id}/content_ratings`);
-      const p = d.results.find((x) => x.iso_3166_1 === 'BR');
-      br = p ? p.rating || null : null;
-    }
-    cache.br[imdbId] = br;
-    salvar();
-    return br;
-  } catch { return null; }
-}
-
-// ───────────────────────── MDBList ─────────────────────────
 const MDB_NULO_TTL = 3 * 24 * 3600 * 1000;
 let mdbPausaAte = 0;
 
@@ -310,7 +363,7 @@ async function baixarMDBList(imdbId, tipo) {
     const t = tipo === 'series' ? 'show' : 'movie';
     const r = await fetch(`https://api.mdblist.com/imdb/${t}/${imdbId}/?apikey=${encodeURIComponent(MDBLIST_KEY)}`, { signal: AbortSignal.timeout(10000) });
     let json = null;
-    try { json = await r.json(); } catch { /* sem JSON */ }
+    try { json = await r.json(); } catch {}
     return { status: r.status, json };
   } catch (e) { return { status: 0, json: null, erro: String((e && e.message) || e) }; }
 }
@@ -363,7 +416,6 @@ async function classificacaoBR(imdbId, tipo) {
   return classificacaoMDBList(imdbId, tipo);
 }
 
-// ───────────────────────── Decisão de bloqueio ─────────────────────────
 function idadeDeBR(br) {
   if (br == null) return null;
   const t = String(br).trim();
@@ -408,53 +460,53 @@ function motivosBloqueio(cfg, br, guia) {
 
 async function avaliar(imdb, tipo, cfg) {
   const [guia, br] = await Promise.all([
-    naFilaIMDb(() => buscarGuia(imdb)).catch(() => undefined),
+    buscarGuia(imdb).catch(() => undefined),
     classificacaoBR(imdb, tipo).catch(() => null),
   ]);
   return { guia, br, motivos: motivosBloqueio(cfg, br, guia) };
 }
 
-// ───────────────────────── Metadados ─────────────────────────
 async function meta(tipo, id, cfg, userAgent = '') {
-  const imdb = id.replace(/^gpbloq:/, '').split(':')[0];
-  if (!/^tt\d+$/.test(imdb)) return null;
+  const imdb = await resolverImdbId(id, tipo);
+  if (!imdb || !/^tt\d+$/.test(imdb)) return null;
 
   const buscarBase = async () => {
-    for (const fonte of [META_URL, 'https://v3-cinemeta.strem.io'].filter(Boolean)) {
+    if (META_URL) {
+      for (const currentId of [id, imdb].filter((v, i, a) => a.indexOf(v) === i)) {
+        try {
+          const r = await fetch(`${META_URL}/meta/${tipo}/${currentId}.json`, { signal: AbortSignal.timeout(8000) });
+          if (r.ok) { const m = (await r.json()).meta; if (m) return m; }
+        } catch {}
+      }
+    }
+    if (imdb && /^tt\d+$/.test(imdb)) {
       try {
-        const r = await fetch(`${fonte}/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
+        const r = await fetch(`https://v3-cinemeta.strem.io/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
         if (r.ok) { const m = (await r.json()).meta; if (m) return m; }
-      } catch { /* tenta a próxima fonte */ }
+      } catch {}
     }
     return null;
   };
 
-  // base, guia/classificação e resumo em paralelo
   const [baseMeta, { guia, br, motivos }, resumo] = await Promise.all([
     buscarBase(),
     avaliar(imdb, tipo, cfg),
     resumoPtBR(imdb).catch(() => null),
   ]);
   
-  const base = baseMeta || { id: imdb, type: tipo, name: imdb, description: '', genres: [] };
+  const base = baseMeta || { id: id, type: tipo, name: imdb, description: '', genres: [] };
   const bloqueado = motivos.length > 0;
 
-  // 🛡️ FALLBACK: Usa a classificação do TMDB/MDBList ('br'), ou recorre à certificação da base se existir
   let classificacaoFinal = br;
-  if (!classificacaoFinal && base.certification) {
-    classificacaoFinal = base.certification;
+  if (!classificacaoFinal && base.certification && /^(l|livre|\d{1,2})$/i.test(String(base.certification).trim())) {
+    classificacaoFinal = String(base.certification).trim();
   }
 
-  // 🛡️ GARANTE QUE A IDADE NÃO SEJA APAGADA E FIQUE NOS GÊNEROS
   base.genres = Array.isArray(base.genres) ? base.genres : [];
   if (classificacaoFinal) {
-    const rotuloBr = /^(l|livre)$/i.test(classificacaoFinal) 
-      ? 'Livre' 
-      : (/^\d+$/.test(String(classificacaoFinal).trim()) ? `${classificacaoFinal} anos` : classificacaoFinal);
+    const rotuloBr = rotuloClassificacao(classificacaoFinal);
 
-    // Remove versões anteriores de idade/classificação para evitar duplicatas nos géneros
     base.genres = base.genres.filter(g => !/^(L|Livre|\d+\s*anos?)$/i.test(g));
-    // Insere a idade no topo dos géneros
     base.genres.unshift(rotuloBr);
   }
 
@@ -464,6 +516,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
   if (isApp) {
     const textoGuiaPais = textoGuia(guia, classificacaoFinal);
     if (original && textoGuiaPais) {
+      // Sinopse primeiro; classificação e guia dos pais logo abaixo
       base.description = `${original}\n\n${textoGuiaPais}`;
     } else {
       base.description = original || textoGuiaPais;
@@ -471,7 +524,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
   } else {
     base.description = original;
     const novasTags = [];
-    if (classificacaoFinal) novasTags.push(`👨‍👩‍👧‍👦 ${/^(l|livre)$/i.test(classificacaoFinal) ? 'Livre' : `${classificacaoFinal} anos`}`);
+    if (classificacaoFinal) novasTags.push(`👨‍👩‍👧‍👦 ${rotuloClassificacao(classificacaoFinal)}`);
     if (guia && typeof guia === 'object') {
       for (const c of CATEGORIAS) {
         const n = guia[c.key];
@@ -493,30 +546,28 @@ async function meta(tipo, id, cfg, userAgent = '') {
     if (Array.isArray(base.videos) && base.videos.length) {
       base.videos = base.videos.map((v) => (v && v.id && !String(v.id).startsWith('gpbloq:') ? { ...v, id: `gpbloq:${v.id}` } : v));
     } else if (tipo === 'movie') {
-      base.id = `gpbloq:${imdb}`;
+      base.id = id.startsWith('gpbloq:') ? id : `gpbloq:${id}`;
     }
   }
 
   return { meta: base, bloqueado, motivos, incompleto: guia === undefined };
 }
 
-// ───────────────────────── Manifest ─────────────────────────
-function manifest(configuravel = true) {
+function manifest() {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.1.5',
+    version: '2.2.7',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
     resources: ['meta', 'stream'],
     types: ['movie', 'series'],
-    idPrefixes: ['tt', 'gpbloq:'],
+    idPrefixes: ['tt', 'gpbloq:', 'tvdb:', 'tmdb:', 'tvdbc:', 'aiom.collection:'],
     catalogs: [],
-    behaviorHints: { configurable: configuravel },
+    behaviorHints: { configurable: true },
   };
 }
 
-// ───────────────────────── Página de Configuração ─────────────────────────
 function paginaConfig(cfg) {
   const linhas = CATEGORIAS.map((c) => `
       <label>${c.icone} ${c.rotulo}
@@ -605,7 +656,6 @@ function paginaConfig(cfg) {
 </script></body></html>`;
 }
 
-// ───────────────────────── Servidor HTTP ─────────────────────────
 function json(res, obj, maxAge = 0, status = 200) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -616,7 +666,10 @@ function json(res, obj, maxAge = 0, status = 200) {
   res.end(JSON.stringify(obj));
 }
 
-const RESERVADOS = new Set(['configure', 'manifest.json', 'stream', 'meta', 'health', 'debug', 'config.json', 'avaliar']);
+const TIPOS_OK = new Set(['movie', 'series']);
+function paramsOk(tipo, id) { return TIPOS_OK.has(tipo) && /^[A-Za-z0-9_.:-]{1,100}$/.test(id); }
+
+const RESERVADOS = new Set(['configure', 'manifest.json', 'stream', 'meta', 'health', 'avaliar']);
 
 http.createServer(async (req, res) => {
   try {
@@ -645,28 +698,36 @@ http.createServer(async (req, res) => {
     if (partes[0] === 'manifest.json') return json(res, manifest());
 
     if (partes[0] === 'meta') {
+      const tipo = dec(partes[1]);
+      const id = dec(partes[2]);
+      if (!paramsOk(tipo, id)) return json(res, { meta: null }, 0);
       const userAgent = req.headers['user-agent'] || '';
-      const r = await meta(dec(partes[1]), dec(partes[2]), cfg, userAgent);
+      const r = await meta(tipo, id, cfg, userAgent);
       if (!r) return json(res, { meta: null }, 0);
       return json(res, { meta: r.meta }, r.incompleto ? 0 : 300);
     }
 
     if (partes[0] === 'avaliar') {
-      const imdb = dec(partes[2]).replace(/^gpbloq:/, '').split(':')[0];
-      if (!/^tt\d+$/.test(imdb)) return json(res, { erro: 'use /avaliar/movie/tt1234567' }, 0, 400);
-      const r = avaliar(imdb, dec(partes[1]), cfg);
+      const tipo = dec(partes[1]);
+      const rawId = dec(partes[2]);
+      if (!paramsOk(tipo, rawId)) return json(res, { erro: 'parâmetros inválidos' }, 0, 400);
+      const imdb = await resolverImdbId(rawId, tipo);
+      if (!imdb || !/^tt\d+$/.test(imdb)) return json(res, { erro: 'ID inválido ou não resolvido para IMDb' }, 0, 400);
+      const r = await avaliar(imdb, tipo, cfg);
       return json(res, { imdb, config: cfg, classificacaoBR: r.br, guia: r.guia, bloqueado: r.motivos.length > 0, motivos: r.motivos }, 0);
     }
 
     if (partes[0] === 'stream') {
       const tipo = dec(partes[1]);
-      const imdb = dec(partes[2]).replace(/^gpbloq:/, '').split(':')[0];
-      if (!/^tt\d+$/.test(imdb)) return json(res, { streams: [] }, 0);
+      const rawId = dec(partes[2]);
+      if (!paramsOk(tipo, rawId)) return json(res, { streams: [] }, 0);
+      const imdb = await resolverImdbId(rawId, tipo);
+      if (!imdb || !/^tt\d+$/.test(imdb)) return json(res, { streams: [] }, 0);
       
       const { motivos } = await avaliar(imdb, tipo, cfg);
       const streams = [];
 
-      if (motivos.length >0) {
+      if (motivos.length > 0) {
         streams.push({
           name: '🔒 BLOQUEADO',
           description: motivos[0].replace(/\s*\(.*\)\s*$/, ''),
@@ -683,5 +744,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.1.5 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.2.7 a rodar em http://localhost:${PORT}/configure`);
 });
