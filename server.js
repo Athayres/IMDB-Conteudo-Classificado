@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Addon Stremio – Classificador de IMPROPRIO (IMDb) em PT-BR
- * Versão: 2.2.4 (Guia e Classificação movidos para o topo da descrição para fácil leitura)
+ * Versão: 2.2.5 (Guia e Classificação movidos para o topo da descrição para fácil leitura)
  */
 const http = require('http');
 const fs = require('fs');
@@ -96,45 +96,28 @@ async function tmdb(caminho, params = {}) {
 }
 
 async function resolverImdbId(id, tipo) {
-  const cleanId = id.replace(/^gpbloq:/, '').split(':')[0];
+  const raw = id.replace(/^gpbloq:/, '');
+  const cleanId = raw.split(':')[0];
   if (/^tt\d+$/.test(cleanId)) return cleanId;
-  if (id.startsWith('aiom.collection:') || id.startsWith('tvdbc:')) return null;
+  if (raw.startsWith('aiom.collection:') || raw.startsWith('tvdbc:')) return null;
 
   if (!TMDB_KEY) return null;
 
+  // IDs do TMDB de filme e série são independentes: usa só o endpoint do tipo certo
+  const tv = tipo === 'series' || tipo === 'tv';
+  const ext = async (kind, n) => {
+    try { return (await tmdb(`/${kind}/${n}/external_ids`)).imdb_id || null; } catch { return null; }
+  };
+
   try {
-    if (id.startsWith('tmdb:')) {
-      const tmdbId = id.replace(/^gpbloq:/, '').split(':')[1];
-      const isTv = tipo === 'series' || tipo === 'tv' || id.includes('series');
-      const endpoints = isTv ? [`/tv/${tmdbId}/external_ids`, `/movie/${tmdbId}/external_ids`] : [`/movie/${tmdbId}/external_ids`, `/tv/${tmdbId}/external_ids`];
-      
-      for (const ep of endpoints) {
-        try {
-          const ext = await tmdb(ep);
-          if (ext && ext.imdb_id) return ext.imdb_id;
-        } catch {}
-      }
+    if (raw.startsWith('tmdb:')) {
+      return await ext(tv ? 'tv' : 'movie', raw.split(':')[1]);
     }
 
-    if (id.startsWith('tvdb:')) {
-      const tvdbId = id.replace(/^gpbloq:/, '').split(':')[1];
-      const f = await tmdb(`/find/${tvdbId}`, { external_source: 'tvdb_id' });
-      const movieRes = f.movie_results || [];
-      const tvRes = f.tv_results || [];
-      const allResults = [...tvRes, ...movieRes];
-
-      for (const it of allResults) {
-        if (!it || !it.id) continue;
-        const isTvResult = tvRes.includes(it);
-        const endpoints = isTvResult ? [`/tv/${it.id}/external_ids`, `/movie/${it.id}/external_ids`] : [`/movie/${it.id}/external_ids`, `/tv/${it.id}/external_ids`];
-
-        for (const ep of endpoints) {
-          try {
-            const ext = await tmdb(ep);
-            if (ext && ext.imdb_id) return ext.imdb_id;
-          } catch {}
-        }
-      }
+    if (raw.startsWith('tvdb:')) {
+      const f = await tmdb(`/find/${raw.split(':')[1]}`, { external_source: 'tvdb_id' });
+      const r = ((tv ? f.tv_results : f.movie_results) || [])[0];
+      return r && r.id ? await ext(tv ? 'tv' : 'movie', r.id) : null;
     }
   } catch (e) {
     console.error('Erro ao resolver ID externo:', e.message);
@@ -559,7 +542,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
     if (Array.isArray(base.videos) && base.videos.length) {
       base.videos = base.videos.map((v) => (v && v.id && !String(v.id).startsWith('gpbloq:') ? { ...v, id: `gpbloq:${v.id}` } : v));
     } else if (tipo === 'movie') {
-      base.id = `gpbloq:${id}`;
+      base.id = id.startsWith('gpbloq:') ? id : `gpbloq:${id}`;
     }
   }
 
@@ -569,7 +552,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.2.4',
+    version: '2.2.5',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -751,5 +734,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.2.4 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.2.5 a rodar em http://localhost:${PORT}/configure`);
 });
