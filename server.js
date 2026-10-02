@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Addon Stremio – Classificador de IMPROPRIO (IMDb) em PT-BR
- * Versão: 2.2.3 (Forço de sinopse em PT-BR a partir dos detalhes oficiais do TMDB)
+ * Versão: 2.2.4 (Guia e Classificação movidos para o topo da descrição para fácil leitura)
  */
 const http = require('http');
 const fs = require('fs');
@@ -151,8 +151,7 @@ async function acharTMDB(imdbId) {
   return f;
 }
 
-// Resumo melhorado: Busca direta na rota de detalhes do TMDB em pt-BR
-async function resumoPtBR(imdbId, tipo) {
+async function resumoPtBR(imdbId) {
   if (!TMDB_KEY) return null;
   try {
     const f = await acharTMDB(imdbId);
@@ -503,7 +502,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
   const [baseMeta, { guia, br, motivos }, resumo] = await Promise.all([
     buscarBase(),
     avaliar(imdb, tipo, cfg),
-    resumoPtBR(imdb, tipo).catch(() => null),
+    resumoPtBR(imdb).catch(() => null),
   ]);
   
   const base = baseMeta || { id: id, type: tipo, name: imdb, description: '', genres: [] };
@@ -530,14 +529,15 @@ async function meta(tipo, id, cfg, userAgent = '') {
   if (isApp) {
     const textoGuiaPais = textoGuia(guia, classificacaoFinal);
     if (original && textoGuiaPais) {
-      base.description = `${original}\n\n${textoGuiaPais}`;
+      // Guia dos Pais no TOPO para facilitar a leitura imediata
+      base.description = `${textoGuiaPais}\n\n${original}`;
     } else {
       base.description = original || textoGuiaPais;
     }
   } else {
     base.description = original;
     const novasTags = [];
-    if (classificacaoFinal) novasTags.push(`👨‍👩‍👧‍‍👦 ${/^(l|livre)$/i.test(classificacaoFinal) ? 'Livre' : `${classificacaoFinal} anos`}`);
+    if (classificacaoFinal) novasTags.push(`👨‍👩‍👧‍👦 ${/^(l|livre)$/i.test(classificacaoFinal) ? 'Livre' : `${classificacaoFinal} anos`}`);
     if (guia && typeof guia === 'object') {
       for (const c of CATEGORIAS) {
         const n = guia[c.key];
@@ -569,7 +569,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.2.3',
+    version: '2.2.4',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -751,5 +751,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.2.3 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.2.4 a rodar em http://localhost:${PORT}/configure`);
 });
