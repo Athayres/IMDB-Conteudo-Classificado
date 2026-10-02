@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Addon Stremio – Classificador de IMPROPRIO (IMDb) em PT-BR
- * Versão: 2.2.5 (Guia e Classificação movidos para o topo da descrição para fácil leitura)
+ * Versão: 2.2.6 (Guia e Classificação movidos para o topo da descrição para fácil leitura)
  */
 const http = require('http');
 const fs = require('fs');
@@ -30,9 +30,10 @@ const CATEGORIAS = [
 const BLOQUEAR_SEM_INFO = process.env.BLOQUEAR_SEM_CLASSIFICACAO === '1';
 const CFG_PADRAO = { max: { sexo: 0, violencia: 1, palavroes: 0, drogas: 1, susto: 1 }, idade: 18 };
 
-let cache = { guias: {}, ids: {}, br: {}, mdb: {} };
+let cache = { guias: {}, br: {}, mdb: {} };
 try { cache = Object.assign(cache, JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'))); } catch { /* primeiro uso */ }
 if (cache.v !== 2) { cache.guias = {}; cache.v = 2; }
+delete cache.ids;
 let salvarTimer = null;
 function salvar() {
   clearTimeout(salvarTimer);
@@ -109,13 +110,16 @@ async function resolverImdbId(id, tipo) {
     try { return (await tmdb(`/${kind}/${n}/external_ids`)).imdb_id || null; } catch { return null; }
   };
 
+  const num = raw.split(':')[1] || '';
+  if ((raw.startsWith('tmdb:') || raw.startsWith('tvdb:')) && !/^\d+$/.test(num)) return null;
+
   try {
     if (raw.startsWith('tmdb:')) {
-      return await ext(tv ? 'tv' : 'movie', raw.split(':')[1]);
+      return await ext(tv ? 'tv' : 'movie', num);
     }
 
     if (raw.startsWith('tvdb:')) {
-      const f = await tmdb(`/find/${raw.split(':')[1]}`, { external_source: 'tvdb_id' });
+      const f = await tmdb(`/find/${num}`, { external_source: 'tvdb_id' });
       const r = ((tv ? f.tv_results : f.movie_results) || [])[0];
       return r && r.id ? await ext(tv ? 'tv' : 'movie', r.id) : null;
     }
@@ -155,7 +159,9 @@ async function resumoPtBR(imdbId) {
 
 async function classificacaoTMDB(imdbId) {
   if (!TMDB_KEY) return null;
-  if (cache.br[imdbId] !== undefined) return cache.br[imdbId];
+  const c = cache.br[imdbId];
+  if (typeof c === 'string') return c; // formato antigo (valor direto)
+  if (c && typeof c === 'object' && Date.now() - c.t < (c.v ? GUIA_TTL : NULO_TTL)) return c.v;
   try {
     const f = await acharTMDB(imdbId);
     let br = null;
@@ -169,7 +175,7 @@ async function classificacaoTMDB(imdbId) {
       const p = d.results.find((x) => x.iso_3166_1 === 'BR');
       br = p ? p.rating || null : null;
     }
-    cache.br[imdbId] = br;
+    cache.br[imdbId] = { t: Date.now(), v: br };
     salvar();
     return br;
   } catch { return null; }
@@ -285,24 +291,17 @@ function extrairGuia(html) {
 }
 
 async function consultarIMDb(imdbId) {
-  const dbg = { imdbId };
   const gq = await baixarGraphQL(imdbId);
-  dbg.graphql = { status: gq.status, erro: gq.erro, inicio: (gq.texto || '').slice(0, 300) };
   if (gq.json) {
     const g = guiaDeJson(gq.json);
-    if (g) return { guia: g, dbg };
-    if (gq.json.data && gq.json.data.title && !gq.json.errors) return { guia: null, dbg };
+    if (g) return { guia: g };
+    if (gq.json.data && gq.json.data.title && !gq.json.errors) return { guia: null };
   }
   const p = await baixarPaginaIMDb(imdbId);
-  dbg.pagina = {
-    status: p.status, erro: p.erro, tamanho: p.html.length,
-    temNextData: p.html.includes('__NEXT_DATA__'),
-    temAdvisory: /advisory-nudity/i.test(p.html),
-    titulo: (p.html.match(/<title>([^<]*)<\/title>/i) || [])[1] || null,
-    inicio: p.html.slice(0, 300),
-  };
   const g = p.html ? extrairGuia(p.html) : null;
-  return { guia: g, falhou: !g && p.status !== 200, dbg };
+  // página 200 sem __NEXT_DATA__ nem seções advisory (captcha/bloqueio) = falha, não "sem guia"
+  const paginaValida = p.status === 200 && (p.html.includes('__NEXT_DATA__') || /advisory-/i.test(p.html));
+  return { guia: g, falhou: !g && !paginaValida };
 }
 
 const guiasEmVoo = new Map();
@@ -329,9 +328,16 @@ async function buscarGuia(imdbId) {
   return p;
 }
 
+function rotuloClassificacao(br) {
+  const t = String(br).trim();
+  if (/^(l|livre)$/i.test(t)) return 'Livre';
+  if (/^\d+$/.test(t)) return `${t} anos`;
+  return t;
+}
+
 function textoGuia(guia, br) {
   const linhas = [];
-  if (br) linhas.push(`Classificação indicativa: ${br === 'L' ? 'Livre' : br + ' anos'}`);
+  if (br) linhas.push(`Classificação indicativa: ${rotuloClassificacao(br)}`);
 
   if (guia === undefined) {
     linhas.push('Guia dos Pais do IMDb indisponível no momento');
@@ -492,15 +498,13 @@ async function meta(tipo, id, cfg, userAgent = '') {
   const bloqueado = motivos.length > 0;
 
   let classificacaoFinal = br;
-  if (!classificacaoFinal && base.certification) {
-    classificacaoFinal = base.certification;
+  if (!classificacaoFinal && base.certification && /^(l|livre|\d{1,2})$/i.test(String(base.certification).trim())) {
+    classificacaoFinal = String(base.certification).trim();
   }
 
   base.genres = Array.isArray(base.genres) ? base.genres : [];
   if (classificacaoFinal) {
-    const rotuloBr = /^(l|livre)$/i.test(classificacaoFinal) 
-      ? 'Livre' 
-      : (/^\d+$/.test(String(classificacaoFinal).trim()) ? `${classificacaoFinal} anos` : classificacaoFinal);
+    const rotuloBr = rotuloClassificacao(classificacaoFinal);
 
     base.genres = base.genres.filter(g => !/^(L|Livre|\d+\s*anos?)$/i.test(g));
     base.genres.unshift(rotuloBr);
@@ -520,7 +524,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
   } else {
     base.description = original;
     const novasTags = [];
-    if (classificacaoFinal) novasTags.push(`👨‍👩‍👧‍👦 ${/^(l|livre)$/i.test(classificacaoFinal) ? 'Livre' : `${classificacaoFinal} anos`}`);
+    if (classificacaoFinal) novasTags.push(`👨‍👩‍👧‍👦 ${rotuloClassificacao(classificacaoFinal)}`);
     if (guia && typeof guia === 'object') {
       for (const c of CATEGORIAS) {
         const n = guia[c.key];
@@ -549,10 +553,10 @@ async function meta(tipo, id, cfg, userAgent = '') {
   return { meta: base, bloqueado, motivos, incompleto: guia === undefined };
 }
 
-function manifest(configuravel = true) {
+function manifest() {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.2.5',
+    version: '2.2.6',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -560,7 +564,7 @@ function manifest(configuravel = true) {
     types: ['movie', 'series'],
     idPrefixes: ['tt', 'gpbloq:', 'tvdb:', 'tmdb:', 'tvdbc:', 'aiom.collection:'],
     catalogs: [],
-    behaviorHints: { configurable: configuravel },
+    behaviorHints: { configurable: true },
   };
 }
 
@@ -662,7 +666,10 @@ function json(res, obj, maxAge = 0, status = 200) {
   res.end(JSON.stringify(obj));
 }
 
-const RESERVADOS = new Set(['configure', 'manifest.json', 'stream', 'meta', 'health', 'debug', 'config.json', 'avaliar']);
+const TIPOS_OK = new Set(['movie', 'series']);
+function paramsOk(tipo, id) { return TIPOS_OK.has(tipo) && /^[A-Za-z0-9_.:-]{1,100}$/.test(id); }
+
+const RESERVADOS = new Set(['configure', 'manifest.json', 'stream', 'meta', 'health', 'avaliar']);
 
 http.createServer(async (req, res) => {
   try {
@@ -693,6 +700,7 @@ http.createServer(async (req, res) => {
     if (partes[0] === 'meta') {
       const tipo = dec(partes[1]);
       const id = dec(partes[2]);
+      if (!paramsOk(tipo, id)) return json(res, { meta: null }, 0);
       const userAgent = req.headers['user-agent'] || '';
       const r = await meta(tipo, id, cfg, userAgent);
       if (!r) return json(res, { meta: null }, 0);
@@ -702,6 +710,7 @@ http.createServer(async (req, res) => {
     if (partes[0] === 'avaliar') {
       const tipo = dec(partes[1]);
       const rawId = dec(partes[2]);
+      if (!paramsOk(tipo, rawId)) return json(res, { erro: 'parâmetros inválidos' }, 0, 400);
       const imdb = await resolverImdbId(rawId, tipo);
       if (!imdb || !/^tt\d+$/.test(imdb)) return json(res, { erro: 'ID inválido ou não resolvido para IMDb' }, 0, 400);
       const r = await avaliar(imdb, tipo, cfg);
@@ -711,6 +720,7 @@ http.createServer(async (req, res) => {
     if (partes[0] === 'stream') {
       const tipo = dec(partes[1]);
       const rawId = dec(partes[2]);
+      if (!paramsOk(tipo, rawId)) return json(res, { streams: [] }, 0);
       const imdb = await resolverImdbId(rawId, tipo);
       if (!imdb || !/^tt\d+$/.test(imdb)) return json(res, { streams: [] }, 0);
       
@@ -734,5 +744,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.2.5 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.2.6 a rodar em http://localhost:${PORT}/configure`);
 });
