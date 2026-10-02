@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Addon Stremio – Classificador de IMPROPRIO (IMDb) em PT-BR
- * Versão: 2.2.6 (Guia e Classificação movidos para o topo da descrição para fácil leitura)
+ * Versão: 2.2.7 (Sinopse primeiro; Guia e Classificação abaixo dela)
  */
 const http = require('http');
 const fs = require('fs');
@@ -516,8 +516,8 @@ async function meta(tipo, id, cfg, userAgent = '') {
   if (isApp) {
     const textoGuiaPais = textoGuia(guia, classificacaoFinal);
     if (original && textoGuiaPais) {
-      // Guia dos Pais no TOPO para facilitar a leitura imediata
-      base.description = `${textoGuiaPais}\n\n${original}`;
+      // Sinopse primeiro; classificação e guia dos pais logo abaixo
+      base.description = `${original}\n\n${textoGuiaPais}`;
     } else {
       base.description = original || textoGuiaPais;
     }
@@ -556,7 +556,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
 function manifest() {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.2.6',
+    version: '2.2.7',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -744,5 +744,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.2.6 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.2.7 a rodar em http://localhost:${PORT}/configure`);
 });
