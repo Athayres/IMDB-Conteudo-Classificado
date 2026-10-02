@@ -4,7 +4,7 @@
  *  - Meta (Tela Principal): Resumo + Guia (App) ou Tags (Web).
  *  - Stream (Tela de Vídeo): Apenas bloqueio de conteúdo baseado nas regras.
  *
- * Versão: 2.2.0 (Com Fallback Inteligente: META_URL primeiro, Cinemeta de segurança)
+ * Versão: 2.2.1 (Resolução avançada e resiliente de IDs TVDB ➔ IMDb)
  * Requer Node 18+. Sem dependências.
  */
 const http = require('http');
@@ -91,7 +91,7 @@ function limpaDescricao(desc) {
   return desc.split(/(?:CONTEÚDO BLOQUEADO|LIBERADO|GUIA DOS PAIS|• Classificação|• 👨‍👩‍👧👦|• 🔞|• 🩸|• 🤬|• 🍺|• 😱)/)[0].trim();
 }
 
-// ───────────────────────── TMDB & Resolução de IDs ─────────────────────────
+// ───────────────────────── TMDB & Resolução Resiliente de IDs ─────────────────────────
 async function tmdb(caminho, params = {}) {
   const u = new URL('https://api.themoviedb.org/3' + caminho);
   u.searchParams.set('api_key', TMDB_KEY);
@@ -111,19 +111,35 @@ async function resolverImdbId(id, tipo) {
   try {
     if (id.startsWith('tmdb:')) {
       const tmdbId = id.replace(/^gpbloq:/, '').split(':')[1];
-      const endpoint = tipo === 'series' || tipo === 'tv' ? `/tv/${tmdbId}/external_ids` : `/movie/${tmdbId}/external_ids`;
-      const ext = await tmdb(endpoint);
-      return ext.imdb_id || null;
+      const isTv = tipo === 'series' || tipo === 'tv' || id.includes('series');
+      const endpoints = isTv ? [`/tv/${tmdbId}/external_ids`, `/movie/${tmdbId}/external_ids`] : [`/movie/${tmdbId}/external_ids`, `/tv/${tmdbId}/external_ids`];
+      
+      for (const ep of endpoints) {
+        try {
+          const ext = await tmdb(ep);
+          if (ext && ext.imdb_id) return ext.imdb_id;
+        } catch {}
+      }
     }
 
     if (id.startsWith('tvdb:')) {
       const tvdbId = id.replace(/^gpbloq:/, '').split(':')[1];
       const f = await tmdb(`/find/${tvdbId}`, { external_source: 'tvdb_id' });
-      const it = (f.movie_results || [])[0] || (f.tv_results || [])[0];
-      if (it && it.id) {
-        const endpoint = tipo === 'series' || tipo === 'tv' ? `/tv/${it.id}/external_ids` : `/movie/${it.id}/external_ids`;
-        const ext = await tmdb(endpoint);
-        return ext.imdb_id || null;
+      const movieRes = f.movie_results || [];
+      const tvRes = f.tv_results || [];
+      const allResults = [...tvRes, ...movieRes];
+
+      for (const it of allResults) {
+        if (!it || !it.id) continue;
+        const isTvResult = tvRes.includes(it);
+        const endpoints = isTvResult ? [`/tv/${it.id}/external_ids`, `/movie/${it.id}/external_ids`] : [`/movie/${it.id}/external_ids`, `/tv/${it.id}/external_ids`];
+
+        for (const ep of endpoints) {
+          try {
+            const ext = await tmdb(ep);
+            if (ext && ext.imdb_id) return ext.imdb_id;
+          } catch {}
+        }
       }
     }
   } catch (e) {
@@ -460,30 +476,26 @@ async function avaliar(imdb, tipo, cfg) {
   return { guia, br, motivos: motivosBloqueio(cfg, br, guia) };
 }
 
-// ───────────────────────── Metadados com Fallback Inteligente (META_URL ➔ Cinemeta) ─────────────────────────
+// ───────────────────────── Metadados ─────────────────────────
 async function meta(tipo, id, cfg, userAgent = '') {
   const imdb = await resolverImdbId(id, tipo);
   if (!imdb || !/^tt\d+$/.test(imdb)) return null;
 
   const buscarBase = async () => {
-    // 1. Tenta buscar primeiro na META_URL configurada (ex: AIOMetadata)
     if (META_URL) {
       for (const currentId of [id, imdb].filter((v, i, a) => a.indexOf(v) === i)) {
         try {
           const r = await fetch(`${META_URL}/meta/${tipo}/${currentId}.json`, { signal: AbortSignal.timeout(8000) });
           if (r.ok) { const m = (await r.json()).meta; if (m) return m; }
-        } catch { /* continua para o próximo formato */ }
+        } catch { /* continua */ }
       }
     }
-
-    // 2. Fallback de segurança: Se falhar ou não houver META_URL, busca no Cinemeta usando o ID do IMDb
     if (imdb && /^tt\d+$/.test(imdb)) {
       try {
         const r = await fetch(`https://v3-cinemeta.strem.io/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
         if (r.ok) { const m = (await r.json()).meta; if (m) return m; }
-      } catch { /* falhou também */ }
+      } catch { /* falhou */ }
     }
-
     return null;
   };
 
@@ -557,7 +569,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
 function manifest(configuravel = true) {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.2.0',
+    version: '2.2.1',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -741,5 +753,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.2.0 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.2.1 a rodar em http://localhost:${PORT}/configure`);
 });
