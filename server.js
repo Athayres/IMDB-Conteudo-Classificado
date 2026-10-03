@@ -87,14 +87,31 @@ function ipDe(req) {
   return xff || (req.socket && req.socket.remoteAddress) || '';
 }
 
-function aplicarPerfil(cfg, req) {
-  const reg = cache.perfis && cache.perfis[ipDe(req)];
+const pendentes = new Map(); // ip -> { config, t } (pareamento aguardando o aparelho abrir um título)
+const PAREAR_TTL = 10 * 60 * 1000;
+const famUA = (ua) => String(ua || '').replace(/[\d._]+/g, '#').slice(0, 200); // ignora números de versão
+
+function pareamentoAtivo(ip) {
+  const p = pendentes.get(ip);
+  if (p && Date.now() - p.t >= PAREAR_TTL) pendentes.delete(ip);
+  return pendentes.has(ip);
+}
+
+function aplicarPerfil(cfg, req, capturar) {
+  const ip = ipDe(req);
+  const chave = ip + '|' + famUA(req.headers['user-agent']);
+  if (capturar && pareamentoAtivo(ip)) {
+    registrarAparelho(chave, pendentes.get(ip).config);
+    pendentes.delete(ip);
+    console.log('Aparelho registrado:', chave);
+  }
+  const reg = cache.perfis && (cache.perfis[chave] || cache.perfis[ip]);
   return reg ? lerConfig(Buffer.from(JSON.stringify(reg)).toString('base64url')) : cfg;
 }
 
-function registrarAparelho(ip, config) {
+function registrarAparelho(chave, config) {
   if (!cache.perfis) cache.perfis = {};
-  cache.perfis[ip] = config;
+  cache.perfis[chave] = config;
   salvar();
 }
 
@@ -636,7 +653,7 @@ function paginaConfig(cfg) {
     </div>
     <input id="url" readonly>
     <button class="sec" id="copiar" type="button">Copiar link do addon</button>
-    <button class="sec" id="registrar" type="button">Salvar esta configuração só para este aparelho/rede</button>
+    <button class="sec" id="registrar" type="button">Registrar um aparelho com esta configuração</button>
     <small id="regMsg"></small>
   </div>
 </main>
@@ -673,11 +690,20 @@ function paginaConfig(cfg) {
     var i = document.getElementById('url'); i.select();
     (navigator.clipboard ? navigator.clipboard.writeText(i.value) : Promise.resolve(document.execCommand('copy'))).then(function(){ document.getElementById('copiar').textContent = 'Copiado!'; });
   };
+  var pollReg = null;
   document.getElementById('registrar').onclick = function(){
     var m = document.getElementById('regMsg');
+    clearInterval(pollReg);
     fetch('/registrar/' + window._b64).then(function(r){ return r.json(); }).then(function(j){
-      m.textContent = j.ok ? 'Salvo para o IP ' + j.ip + '. Aparelhos sem registro continuam usando a configuração do link instalado.' : 'Não foi possível salvar.';
-    }).catch(function(){ m.textContent = 'Não foi possível salvar.'; });
+      if (!j.ok) { m.textContent = 'Não foi possível iniciar.'; return; }
+      m.textContent = 'Agora abra um título no Stremio, no aparelho que você quer registrar (em até 10 minutos). Use só esse aparelho até aparecer Registrado.';
+      var t0 = Date.now();
+      pollReg = setInterval(function(){
+        fetch('/registrar-status').then(function(r){ return r.json(); }).then(function(st){
+          if (!st.pendente) { clearInterval(pollReg); m.textContent = (Date.now() - t0 > 590000) ? 'Tempo esgotado. Clique de novo.' : 'Registrado! Esse aparelho agora usa esta configuração.'; }
+        }).catch(function(){});
+      }, 3000);
+    }).catch(function(){ m.textContent = 'Não foi possível iniciar.'; });
   };
   atualizar();
 </script></body></html>`;
@@ -697,7 +723,7 @@ function json(res, obj, maxAge = 0, status = 200) {
 const TIPOS_OK = new Set(['movie', 'series']);
 function paramsOk(tipo, id) { return TIPOS_OK.has(tipo) && /^[A-Za-z0-9_.:-]{1,100}$/.test(id); }
 
-const RESERVADOS = new Set(['configure', 'manifest.json', 'stream', 'meta', 'health', 'avaliar', 'registrar']);
+const RESERVADOS = new Set(['configure', 'manifest.json', 'stream', 'meta', 'health', 'avaliar', 'registrar', 'registrar-status']);
 
 http.createServer(async (req, res) => {
   try {
@@ -716,7 +742,7 @@ http.createServer(async (req, res) => {
     if (partes[0] === 'health') return json(res, { ok: true });
 
     const cfgB64 = RESERVADOS.has(partes[0]) ? '' : partes.shift();
-    const cfg = aplicarPerfil(lerConfig(cfgB64), req);
+    const cfg = aplicarPerfil(lerConfig(cfgB64), req, partes[0] === 'meta' || partes[0] === 'stream');
     const dec = (s) => decodeURIComponent((s || '').replace(/\.json$/, ''));
 
     if (partes[0] === 'configure') {
@@ -726,9 +752,10 @@ http.createServer(async (req, res) => {
     if (partes[0] === 'registrar') {
       const ip = ipDe(req);
       const c = lerConfig(dec(partes[1]));
-      try { registrarAparelho(ip, c); return json(res, { ok: true, ip, config: c }, 0); }
-      catch (e) { console.error(e); return json(res, { ok: false }, 0, 500); }
+      pendentes.set(ip, { config: c, t: Date.now() });
+      return json(res, { ok: true, ip, config: c }, 0);
     }
+    if (partes[0] === 'registrar-status') return json(res, { pendente: pareamentoAtivo(ipDe(req)) }, 0);
 
     if (partes[0] === 'manifest.json') return json(res, manifest());
 
@@ -749,7 +776,7 @@ http.createServer(async (req, res) => {
       const imdb = await resolverImdbId(rawId, tipo);
       if (!imdb || !/^tt\d+$/.test(imdb)) return json(res, { erro: 'ID inválido ou não resolvido para IMDb' }, 0, 400);
       const r = await avaliar(imdb, tipo, cfg);
-      return json(res, { imdb, config: cfg, classificacaoBR: r.br, guia: r.guia, bloqueado: r.motivos.length > 0, motivos: r.motivos }, 0);
+      return json(res, { imdb, ip: ipDe(req), config: cfg, classificacaoBR: r.br, guia: r.guia, bloqueado: r.motivos.length > 0, motivos: r.motivos }, 0);
     }
 
     if (partes[0] === 'stream') {
@@ -760,6 +787,7 @@ http.createServer(async (req, res) => {
       if (!imdb || !/^tt\d+$/.test(imdb)) return json(res, { streams: [] }, 0);
       
       const { motivos } = await avaliar(imdb, tipo, cfg);
+      console.log('stream', rawId, '| ip', ipDe(req), '| link', cfgB64.slice(0, 8) || '(sem config)', '| idade', cfg.idade, '| bloqueado', motivos.length > 0, '| UA', req.headers['user-agent'] || '');
       const streams = [];
 
       if (motivos.length > 0) {
