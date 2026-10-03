@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Addon Stremio – Classificador de IMPROPRIO (IMDb) em PT-BR
- * Versão: 2.2.7 (Sinopse primeiro; Guia e Classificação abaixo dela)
+ * Versão: 2.2.8 (Sinopse primeiro; Guia e Classificação abaixo dela; config por aparelho registrada pelo botão da /configure)
  */
 const http = require('http');
 const fs = require('fs');
@@ -79,6 +79,23 @@ function lerConfig(b64) {
     if ([0, 10, 12, 14, 16, 18].includes(idade)) cfg.idade = idade;
   } catch { /* usa padrão */ }
   return cfg;
+}
+
+// ---- Config por aparelho (registrada pelo botão da /configure, guardada no cache.json) ----
+function ipDe(req) {
+  const xff = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return xff || (req.socket && req.socket.remoteAddress) || '';
+}
+
+function aplicarPerfil(cfg, req) {
+  const reg = cache.perfis && cache.perfis[ipDe(req)];
+  return reg ? lerConfig(Buffer.from(JSON.stringify(reg)).toString('base64url')) : cfg;
+}
+
+function registrarAparelho(ip, config) {
+  if (!cache.perfis) cache.perfis = {};
+  cache.perfis[ip] = config;
+  salvar();
 }
 
 function limpaDescricao(desc) {
@@ -556,7 +573,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
 function manifest() {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.2.7',
+    version: '2.2.8',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -618,6 +635,8 @@ function paginaConfig(cfg) {
     </div>
     <input id="url" readonly>
     <button class="sec" id="copiar" type="button">Copiar link do addon</button>
+    <button class="sec" id="registrar" type="button">Salvar esta configuração só para este aparelho/rede</button>
+    <small id="regMsg"></small>
   </div>
 </main>
 <script>
@@ -637,6 +656,7 @@ function paginaConfig(cfg) {
     sels.forEach(function(s){ c.max[s.dataset.cat] = Number(s.value); });
     var b64 = btoa(JSON.stringify(c)).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
     
+    window._b64 = b64;
     var proto = location.protocol;
     var host = location.host;
     var manifestUrl = proto + '//' + host + '/' + b64 + '/manifest.json';
@@ -652,6 +672,12 @@ function paginaConfig(cfg) {
     var i = document.getElementById('url'); i.select();
     (navigator.clipboard ? navigator.clipboard.writeText(i.value) : Promise.resolve(document.execCommand('copy'))).then(function(){ document.getElementById('copiar').textContent = 'Copiado!'; });
   };
+  document.getElementById('registrar').onclick = function(){
+    var m = document.getElementById('regMsg');
+    fetch('/registrar/' + window._b64).then(function(r){ return r.json(); }).then(function(j){
+      m.textContent = j.ok ? 'Salvo para o IP ' + j.ip + '. Aparelhos sem registro continuam usando a configuração do link instalado.' : 'Não foi possível salvar.';
+    }).catch(function(){ m.textContent = 'Não foi possível salvar.'; });
+  };
   atualizar();
 </script></body></html>`;
 }
@@ -661,6 +687,7 @@ function json(res, obj, maxAge = 0, status = 200) {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': '*',
+    'Vary': 'X-Forwarded-For',
     'Cache-Control': maxAge ? `public, max-age=${maxAge}` : 'no-cache, no-store, must-revalidate',
   });
   res.end(JSON.stringify(obj));
@@ -669,7 +696,7 @@ function json(res, obj, maxAge = 0, status = 200) {
 const TIPOS_OK = new Set(['movie', 'series']);
 function paramsOk(tipo, id) { return TIPOS_OK.has(tipo) && /^[A-Za-z0-9_.:-]{1,100}$/.test(id); }
 
-const RESERVADOS = new Set(['configure', 'manifest.json', 'stream', 'meta', 'health', 'avaliar']);
+const RESERVADOS = new Set(['configure', 'manifest.json', 'stream', 'meta', 'health', 'avaliar', 'registrar']);
 
 http.createServer(async (req, res) => {
   try {
@@ -688,13 +715,20 @@ http.createServer(async (req, res) => {
     if (partes[0] === 'health') return json(res, { ok: true });
 
     const cfgB64 = RESERVADOS.has(partes[0]) ? '' : partes.shift();
-    const cfg = lerConfig(cfgB64);
+    const cfg = aplicarPerfil(lerConfig(cfgB64), req);
     const dec = (s) => decodeURIComponent((s || '').replace(/\.json$/, ''));
 
     if (partes[0] === 'configure') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       return res.end(paginaConfig(cfg));
     }
+    if (partes[0] === 'registrar') {
+      const ip = ipDe(req);
+      const c = lerConfig(dec(partes[1]));
+      try { registrarAparelho(ip, c); return json(res, { ok: true, ip, config: c }, 0); }
+      catch (e) { console.error(e); return json(res, { ok: false }, 0, 500); }
+    }
+
     if (partes[0] === 'manifest.json') return json(res, manifest());
 
     if (partes[0] === 'meta') {
@@ -744,5 +778,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.2.7 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.2.8 a rodar em http://localhost:${PORT}/configure`);
 });
