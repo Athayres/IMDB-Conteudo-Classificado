@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Addon Stremio – Classificador de IMPROPRIO (IMDb) em PT-BR
- * Versão: 2.2.8 (Sinopse primeiro; Guia e Classificação abaixo dela; config por aparelho registrada pelo botão da /configure)
+ * Versão: 2.2.9 (meta base em paralelo + cache de 6h; resto igual à 2.2.8)
  */
 const http = require('http');
 const fs = require('fs');
@@ -500,26 +500,40 @@ async function avaliar(imdb, tipo, cfg) {
   return { guia, br, motivos: motivosBloqueio(cfg, br, guia) };
 }
 
+const baseCache = new Map();
+const BASE_TTL = 6 * 3600 * 1000;
+const BASE_TIMEOUT = 5000;
+
 async function meta(tipo, id, cfg, userAgent = '') {
   const imdb = await resolverImdbId(id, tipo);
   if (!imdb || !/^tt\d+$/.test(imdb)) return null;
 
   const buscarBase = async () => {
-    if (META_URL) {
-      for (const currentId of [id, imdb].filter((v, i, a) => a.indexOf(v) === i)) {
-        try {
-          const r = await fetch(`${META_URL}/meta/${tipo}/${currentId}.json`, { signal: AbortSignal.timeout(8000) });
-          if (r.ok) { const m = (await r.json()).meta; if (m) return m; }
-        } catch {}
-      }
-    }
-    if (imdb && /^tt\d+$/.test(imdb)) {
+    const chave = `${tipo}|${id}|${imdb}`;
+    const c = baseCache.get(chave);
+    if (c && Date.now() - c.t < BASE_TTL) return structuredClone(c.m);
+
+    const pegar = async (url) => {
       try {
-        const r = await fetch(`https://v3-cinemeta.strem.io/meta/${tipo}/${imdb}.json`, { signal: AbortSignal.timeout(8000) });
+        const r = await fetch(url, { signal: AbortSignal.timeout(BASE_TIMEOUT) });
         if (r.ok) { const m = (await r.json()).meta; if (m) return m; }
       } catch {}
+      return null;
+    };
+    // Cinemeta já sai em paralelo com o AIOMetadata (só é usado se ele falhar)
+    const cinemeta = pegar(`https://v3-cinemeta.strem.io/meta/${tipo}/${imdb}.json`);
+    let m = null;
+    if (META_URL) {
+      const ids = [id, imdb].filter((v, i, a) => a.indexOf(v) === i);
+      const rs = await Promise.all(ids.map((cid) => pegar(`${META_URL}/meta/${tipo}/${cid}.json`)));
+      m = rs.find(Boolean) || null;
     }
-    return null;
+    if (!m) m = await cinemeta;
+    if (m) {
+      if (baseCache.size >= 500) baseCache.clear();
+      baseCache.set(chave, { t: Date.now(), m: structuredClone(m) });
+    }
+    return m;
   };
 
   const [baseMeta, { guia, br, motivos }, resumo] = await Promise.all([
@@ -590,7 +604,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
 function manifest() {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.2.8',
+    version: '2.2.9',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -807,5 +821,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.2.8 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.2.9 a rodar em http://localhost:${PORT}/configure`);
 });
