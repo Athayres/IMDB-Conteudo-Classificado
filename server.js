@@ -669,7 +669,7 @@ function manifest() {
   return {
     id: 'community.guiadospais.ptbr',
     version: '2.3.0',
-    name: 'Guia dos Pais (IMDb)',
+    name: 'Controle de Impróprios',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
     resources: ['meta', 'stream'],
@@ -690,7 +690,7 @@ function paginaConfig(cfg) {
 
   return `<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Guia dos Pais (IMDb) – Configurar</title>
+<title>Controle de Impróprios – Configurar</title>
 <link rel="icon" href="${LOGO}">
 <style>
   :root{color-scheme:light dark;--bg:#f6f5fb;--fg:#1b1b26;--card:#fff;--bd:#d9d7e6;--ac:#6b4cff;--sec:#8b5cf6}
@@ -709,7 +709,7 @@ function paginaConfig(cfg) {
   button.reset{font:inherit;font-weight:600;background:#22c55e;color:#fff;border:0;border-radius:10px;padding:10px;cursor:pointer}
   small{opacity:.75;line-height:1.4}
 </style></head><body><main>
-  <h1><img src="${LOGO}" alt="">Guia dos Pais (IMDb)</h1>
+  <h1><img src="${LOGO}" alt="">Controle de Impróprios</h1>
   <p>Informativo da classificação indicativa diretamente no Stremio.</p>
   <div class="card">
     <button class="reset" id="btnLiberarTudo" type="button">🔓 Liberar Tudo (Sem limites)</button>
@@ -885,5 +885,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.3.0 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Controle de Impróprios v2.3.0 a rodar em http://localhost:${PORT}/configure`);
 });
