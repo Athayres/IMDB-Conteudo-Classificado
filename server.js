@@ -76,7 +76,7 @@ function lerConfig(b64) {
       if (Number.isInteger(v) && v >= 0 && v <= 3) cfg.max[c.key] = v;
     }
     const idade = Number(j.idade);
-    if ([0, 10, 12, 14, 16, 18].includes(idade)) cfg.idade = idade;
+    if ([0, 10, 12, 14, 16, 18, 99].includes(idade)) cfg.idade = idade;
   } catch { /* usa padrão */ }
   return cfg;
 }
@@ -620,7 +620,8 @@ function paginaConfig(cfg) {
     <button class="reset" id="btnLiberarTudo" type="button">🔓 Liberar Tudo (Sem limites)</button>
     <label>🇧🇷 Modos de Bloqueio por Idade
       <select id="idade">
-        <option value="18">Sem limite (Apenas aviso na descrição, não bloqueia)</option>
+        <option value="18">Sem limite (Apenas aviso na descrição, não bloqueia nada)</option>
+        <option value="99">Sem bloqueio por idade (vale só o limite por categoria)</option>
         <option value="16">Bloquear 16 anos ou mais (16 e 18 anos)</option>
         <option value="14">Bloquear 14 anos ou mais (14, 16 e 18 anos)</option>
         <option value="12">Bloquear 12 anos ou mais (12, 14, 16 e 18 anos)</option>
