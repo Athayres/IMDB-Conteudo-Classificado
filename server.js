@@ -1,7 +1,7 @@
 'use strict';
 /**
  * Addon Stremio – Classificador de IMPROPRIO (IMDb) em PT-BR
- * Versão: 2.2.9 (meta base em paralelo + cache de 6h; resto igual à 2.2.8)
+ * Versão: 2.3.0 (título/capa/fundo/gêneros/episódios em PT-BR direto do TMDB; resto igual à 2.2.9)
  */
 const http = require('http');
 const fs = require('fs');
@@ -492,6 +492,64 @@ function motivosBloqueio(cfg, br, guia) {
   return motivos;
 }
 
+// ---- Meta em PT-BR direto do TMDB (nome, capa, fundo, gêneros e episódios) ----
+const TMDB_IMG = 'https://image.tmdb.org/t/p/';
+async function tmdbOverlay(imdb, tipo) {
+  if (!TMDB_KEY) return null;
+  try {
+    const tv = tipo === 'series';
+    const f = await acharTMDB(imdb);
+    const r = ((tv ? f.tv_results : f.movie_results) || [])[0];
+    if (!r || !r.id) return null;
+    const d = await tmdb(`/${tv ? 'tv' : 'movie'}/${r.id}`);
+    const ov = {
+      name: (tv ? d.name : d.title) || '',
+      poster: d.poster_path ? TMDB_IMG + 'w500' + d.poster_path : '',
+      background: d.backdrop_path ? TMDB_IMG + 'w1280' + d.backdrop_path : '',
+      genres: Array.isArray(d.genres) ? d.genres.map((g) => g.name).filter(Boolean) : [],
+      eps: null,
+    };
+    if (tv && Array.isArray(d.seasons)) {
+      const temps = d.seasons.map((x) => x.season_number).filter((n) => n > 0);
+      const lotes = [];
+      for (let i = 0; i < temps.length; i += 20) lotes.push(temps.slice(i, i + 20));
+      const rs = await Promise.all(lotes.map((l) =>
+        tmdb(`/tv/${r.id}`, { append_to_response: l.map((n) => 'season/' + n).join(',') }).catch(() => null)));
+      ov.eps = {};
+      for (const resp of rs) {
+        if (!resp) continue;
+        for (const [k, v] of Object.entries(resp)) {
+          if (!k.startsWith('season/') || !v || !Array.isArray(v.episodes)) continue;
+          for (const e of v.episodes) {
+            ov.eps[`${e.season_number}:${e.episode_number}`] = {
+              name: e.name || '',
+              overview: e.overview || '',
+              still: e.still_path ? TMDB_IMG + 'w300' + e.still_path : '',
+            };
+          }
+        }
+      }
+    }
+    return ov;
+  } catch { return null; }
+}
+
+function aplicarTmdb(m, ov) {
+  if (ov.name) m.name = ov.name;
+  if (ov.poster) m.poster = ov.poster;
+  if (ov.background) m.background = ov.background;
+  if (ov.genres.length) m.genres = ov.genres;
+  if (ov.eps && Array.isArray(m.videos)) {
+    for (const v of m.videos) {
+      const e = v && ov.eps[`${v.season}:${v.episode != null ? v.episode : v.number}`];
+      if (!e) continue;
+      if (e.name && !(v.name && /^Epis[óo]dio\s*\d+$/i.test(e.name))) { v.name = e.name; if (v.title != null) v.title = e.name; }
+      if (e.overview) { v.overview = e.overview; if (v.description != null) v.description = e.overview; }
+      if (e.still && !v.thumbnail) v.thumbnail = e.still;
+    }
+  }
+}
+
 async function avaliar(imdb, tipo, cfg) {
   const [guia, br] = await Promise.all([
     buscarGuia(imdb).catch(() => undefined),
@@ -520,16 +578,22 @@ async function meta(tipo, id, cfg, userAgent = '') {
       } catch {}
       return null;
     };
-    // Cinemeta já sai em paralelo com o AIOMetadata (só é usado se ele falhar)
+    // TMDB (PT-BR) e Cinemeta saem em paralelo; o AIOMetadata só entra se o TMDB não responder
+    const usaTmdb = !!TMDB_KEY && id === imdb;
+    const tm = usaTmdb ? tmdbOverlay(imdb, tipo) : Promise.resolve(null);
     const cinemeta = pegar(`https://v3-cinemeta.strem.io/meta/${tipo}/${imdb}.json`);
     let m = null;
-    if (META_URL) {
+    const ov = await tm;
+    if (ov) m = await cinemeta;
+    if (!m && META_URL) {
       const ids = [id, imdb].filter((v, i, a) => a.indexOf(v) === i);
       const rs = await Promise.all(ids.map((cid) => pegar(`${META_URL}/meta/${tipo}/${cid}.json`)));
       m = rs.find(Boolean) || null;
     }
     if (!m) m = await cinemeta;
-    if (m) {
+    if (!m && ov) m = { id: imdb, type: tipo };
+    if (m && ov) aplicarTmdb(m, ov);
+    if (m && !(usaTmdb && !ov)) {
       if (baseCache.size >= 500) baseCache.clear();
       baseCache.set(chave, { t: Date.now(), m: structuredClone(m) });
     }
@@ -604,7 +668,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
 function manifest() {
   return {
     id: 'community.guiadospais.ptbr',
-    version: '2.2.9',
+    version: '2.3.0',
     name: 'Guia dos Pais (IMDb)',
     logo: LOGO,
     description: 'Exibe a classificação indicativa brasileira e o guia do IMDb diretamente no Stremio.',
@@ -821,5 +885,5 @@ http.createServer(async (req, res) => {
     json(res, { metas: [], streams: [] }, 0, 500);
   }
 }).listen(PORT, () => {
-  console.log(`Guia dos Pais (IMDb) v2.2.9 a rodar em http://localhost:${PORT}/configure`);
+  console.log(`Guia dos Pais (IMDb) v2.3.0 a rodar em http://localhost:${PORT}/configure`);
 });
