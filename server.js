@@ -648,8 +648,8 @@ async function meta(tipo, id, cfg, userAgent = '') {
       const urlGuia = `https://www.imdb.com/title/${imdb}/parentalguide/`;
       base.links = Array.isArray(base.links) ? base.links : [];
       base.links = base.links.filter((l) => !(l && (l.category === 'Classificação' || l.url === urlGuia)));
-      // Um único botão com todas as linhas (cada uma com "• "; se o Stremio Web juntar as quebras, fica separado pelos "•")
-      base.links.push({ name: novasTags.map((t) => '• ' + t).join('\n'), category: 'Classificação', url: urlGuia });
+      // Todo o texto vai no título (categoria), que não é cortado como o botão; o botão fica só com um ponto
+      base.links.push({ name: '.', category: novasTags.map((t) => '• ' + t).join('\n'), url: urlGuia });
     }
   }
 
