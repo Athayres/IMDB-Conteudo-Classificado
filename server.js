@@ -635,22 +635,20 @@ async function meta(tipo, id, cfg, userAgent = '') {
     }
   } else {
     base.description = original;
+    // Cada item numa categoria própria: o Stremio Web mostra uma categoria por linha, então ficam um embaixo do outro
     const novasTags = [];
-    if (classificacaoFinal) novasTags.push(`👨‍👩‍👧‍👦 ${rotuloClassificacao(classificacaoFinal)}`);
+    if (classificacaoFinal) novasTags.push({ category: 'Classificação indicativa', name: `👨‍👩‍👧‍👦 ${rotuloClassificacao(classificacaoFinal)}` });
     if (guia && typeof guia === 'object') {
       for (const c of CATEGORIAS) {
         const n = guia[c.key];
-        if (n != null) novasTags.push(`${c.icone} ${c.rotulo}: ${NIVEIS[n]}`);
+        if (n != null) novasTags.push({ category: `${c.icone} ${c.rotulo}`, name: `${COR[n]} ${NIVEIS[n]}` });
       }
     }
     if (novasTags.length > 0) {
+      const urlGuia = `https://www.imdb.com/title/${imdb}/parentalguide/`;
       base.links = Array.isArray(base.links) ? base.links : [];
-      base.links = base.links.filter((l) => !(l && l.category === 'Classificação'));
-      base.links.push(...novasTags.map((tag) => ({
-        name: tag,
-        category: 'Classificação',
-        url: `https://www.imdb.com/title/${imdb}/parentalguide/`,
-      })));
+      base.links = base.links.filter((l) => !(l && (l.category === 'Classificação' || l.url === urlGuia)));
+      base.links.push(...novasTags.map((t) => ({ name: t.name, category: t.category, url: urlGuia })));
     }
   }
 
