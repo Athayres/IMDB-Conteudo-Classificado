@@ -635,20 +635,21 @@ async function meta(tipo, id, cfg, userAgent = '') {
     }
   } else {
     base.description = original;
-    // Cada item numa categoria própria: o Stremio Web mostra uma categoria por linha, então ficam um embaixo do outro
+    // Um título "Classificação" com todos os itens em botões logo abaixo
     const novasTags = [];
-    if (classificacaoFinal) novasTags.push({ category: 'Classificação indicativa', name: `👨‍👩‍👧‍👦 ${rotuloClassificacao(classificacaoFinal)}` });
+    if (classificacaoFinal) novasTags.push(`👨‍👩‍👧‍👦 Idade: ${rotuloClassificacao(classificacaoFinal)}`);
     if (guia && typeof guia === 'object') {
       for (const c of CATEGORIAS) {
         const n = guia[c.key];
-        if (n != null) novasTags.push({ category: `${c.icone} ${c.rotulo}`, name: `${COR[n]} ${NIVEIS[n]}` });
+        if (n != null) novasTags.push(`${c.icone} ${c.rotulo}: ${COR[n]} ${NIVEIS[n]}`);
       }
     }
     if (novasTags.length > 0) {
       const urlGuia = `https://www.imdb.com/title/${imdb}/parentalguide/`;
       base.links = Array.isArray(base.links) ? base.links : [];
       base.links = base.links.filter((l) => !(l && (l.category === 'Classificação' || l.url === urlGuia)));
-      base.links.push(...novasTags.map((t) => ({ name: t.name, category: t.category, url: urlGuia })));
+      // Título "Classificação" só no primeiro; os demais ganham categoria invisível (caracteres de largura zero, todos diferentes) para cada botão ficar na sua linha
+      base.links.push(...novasTags.map((tag, i) => ({ name: tag, category: i === 0 ? 'Classificação' : '\u200B'.repeat(i), url: urlGuia })));
     }
   }
 
