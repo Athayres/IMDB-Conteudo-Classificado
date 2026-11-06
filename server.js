@@ -648,8 +648,8 @@ async function meta(tipo, id, cfg, userAgent = '') {
       const urlGuia = `https://www.imdb.com/title/${imdb}/parentalguide/`;
       base.links = Array.isArray(base.links) ? base.links : [];
       base.links = base.links.filter((l) => !(l && (l.category === 'Classificação' || l.url === urlGuia)));
-      // Todo o texto vai no título (categoria), que não é cortado como o botão; o botão fica só com um ponto
-      base.links.push({ name: '.', category: novasTags.map((t) => '• ' + t).join('\n'), url: urlGuia });
+      // O título não respeita quebra de linha, então cada linha vira uma categoria (título) com um botão só com um ponto
+      base.links.push(...novasTags.map((t) => ({ name: '.', category: t, url: urlGuia })));
     }
   }
 
