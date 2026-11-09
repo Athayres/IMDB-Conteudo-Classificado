@@ -654,7 +654,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
       let resto = novasTags;
       if (classificacaoFinal) { botoes.push(novasTags[0]); resto = novasTags.slice(1); }
       // espaços não separáveis (\u00A0) para o espaçamento não ser colapsado pelo navegador
-      const SEP = '\u00A0\u00A0\u00A0•\u00A0\u00A0\u00A0';
+      const SEP = '\u00A0\u00A0\u00A0•\u00A0'; // o • fica junto do item seguinte, igual ao • do início
       for (let i = 0; i < resto.length; i += 2) botoes.push(resto.slice(i, i + 2).join(SEP));
       base.links.push(...botoes.map((nome) => ({ name: `•\u00A0${nome}`, category: 'Classificação', url: urlGuia })));
     }
