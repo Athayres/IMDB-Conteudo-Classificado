@@ -648,15 +648,13 @@ async function meta(tipo, id, cfg, userAgent = '') {
       const urlGuia = `https://www.imdb.com/title/${imdb}/parentalguide/`;
       base.links = Array.isArray(base.links) ? base.links : [];
       base.links = base.links.filter((l) => !(l && (l.category === 'Classificação' || l.url === urlGuia)));
-      // Título "Classificação" com 1 botão por linha, todos na mesma categoria (sem espaços entre eles):
-      // Idade sozinha e os demais de 2 em 2 dentro do mesmo botão, largos o bastante para o Stremio Web pôr um por linha.
-      const botoes = [];
-      let resto = novasTags;
-      if (classificacaoFinal) { botoes.push(novasTags[0]); resto = novasTags.slice(1); }
-      // espaços não separáveis (\u00A0) para o espaçamento não ser colapsado pelo navegador
-      const SEP = '\u00A0\u00A0\u00A0•\u00A0'; // o • fica junto do item seguinte, igual ao • do início
-      for (let i = 0; i < resto.length; i += 2) botoes.push(resto.slice(i, i + 2).join(SEP));
-      base.links.push(...botoes.map((nome) => ({ name: `•\u00A0${nome}`, category: 'Classificação', url: urlGuia })));
+      // Tudo numa categoria só (sem espaços entre as linhas). O botão da Idade é alargado com espaços não separáveis
+      // para ocupar a linha sozinho; os demais são botões separados e o Stremio Web decide quantos ficam por linha.
+      const LARGURA_IDADE = 70; // ajuste: mais = botão mais largo
+      novasTags.forEach((tag, i) => {
+        const largo = classificacaoFinal && i === 0;
+        base.links.push({ name: `•\u00A0${tag}${largo ? '\u00A0'.repeat(LARGURA_IDADE) : ''}`, category: 'Classificação', url: urlGuia });
+      });
     }
   }
 
