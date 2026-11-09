@@ -648,8 +648,16 @@ async function meta(tipo, id, cfg, userAgent = '') {
       const urlGuia = `https://www.imdb.com/title/${imdb}/parentalguide/`;
       base.links = Array.isArray(base.links) ? base.links : [];
       base.links = base.links.filter((l) => !(l && (l.category === 'Classificação' || l.url === urlGuia)));
-      // O título não respeita quebra de linha, então cada linha vira uma categoria (título) com um botão só com um ponto
-      base.links.push(...novasTags.map((t) => ({ name: '.', category: t, url: urlGuia })));
+      // Título "Classificação" + botões: Idade sozinha na 1ª linha e o resto de 2 em 2.
+      // Cada linha é uma categoria; só a primeira tem título visível, as outras usam nome invisível (largura zero, todos diferentes).
+      const linhas = [];
+      let resto = novasTags;
+      if (classificacaoFinal) { linhas.push([novasTags[0]]); resto = novasTags.slice(1); }
+      for (let i = 0; i < resto.length; i += 2) linhas.push(resto.slice(i, i + 2));
+      linhas.forEach((grupo, i) => {
+        const categoria = i === 0 ? 'Classificação' : '\u200B'.repeat(i);
+        grupo.forEach((tag) => base.links.push({ name: tag, category: categoria, url: urlGuia }));
+      });
     }
   }
 
