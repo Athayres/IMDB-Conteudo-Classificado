@@ -641,7 +641,7 @@ async function meta(tipo, id, cfg, userAgent = '') {
     if (guia && typeof guia === 'object') {
       for (const c of CATEGORIAS) {
         const n = guia[c.key];
-        if (n != null) novasTags.push(`${c.icone} ${c.rotulo}: ${COR[n]} ${NIVEIS[n]}`);
+        if (n != null) novasTags.push(`${c.icone} ${c.key === 'violencia' ? 'Violência' : c.rotulo}: ${COR[n]} ${NIVEIS[n]}`); // nome curto só nos botões da web
       }
     }
     if (novasTags.length > 0) {
